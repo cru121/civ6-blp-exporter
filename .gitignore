@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+# Exporter output is Firaxis game content - never commit it
+civ6_export/
+out/
+*.obj
+*.mtl
+*.gltf
+*.bin
+*.png
+!docs/*.png
