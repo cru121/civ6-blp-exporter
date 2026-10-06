@@ -6,6 +6,8 @@ One command exports every model it can read: city and hero buildings, tile bases
 
 ![Exported Babylon assemblies, rendered with obj_raster.py](docs/preview.png)
 
+*Assemblies exported from the Babylon DLC and rendered with `obj_raster.py`: the Trading Dome tile (left) and the Mahavihara tile in two states (right).*
+
 *Unofficial fan tool, not affiliated with or endorsed by Firaxis Games or 2K. This repository contains no game files; the tool only reads your own installation.*
 
 ## What you need
