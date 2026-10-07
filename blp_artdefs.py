@@ -211,7 +211,7 @@ class ModelIndex:
             notes.append('%s/%s: %s' % (pkg, package, r.get('error') or ('%d models read, none named %s' % (r.get('models', 0), entry))))
         other = [p for p in self.installed_in(package) if p not in {pkg for pkg, _ in examined}]
         if other:
-            notes.append('also shipped by (not examined): ' + ', '.join(other))
+            notes.append('also shipped by (not examined): ' + ', '.join(other[:5]) + (' and %d more' % (len(other) - 5) if len(other) > 5 else ''))
         unreadable = any(not r.get('models') for _, r in examined)      # an examined copy yielded nothing: the entry may be hiding in it
         return ('blp-unreadable' if unreadable else 'not-in-examined-blps'), notes
 
@@ -238,6 +238,24 @@ STATUS_TEXT = {
 }
 
 
+def _merge_cultures(rows):
+    """A bin lists the same asset once per culture (usually only the skin tint differs): one row per asset, tints grouped by culture."""
+    out = {}
+    for r in rows:
+        out.setdefault(r['entry'], []).append(r)
+    merged = []
+    for entry, rs in out.items():
+        by_tint = {}
+        for r in rs:
+            by_tint.setdefault(r['tint'] or '', []).append(r['culture'])
+        if len(by_tint) == 1:
+            tint = next(iter(by_tint))
+        else:
+            tint = '; '.join('%s (%s)' % (t or 'none', ', '.join(cs)) for t, cs in by_tint.items())
+        merged.append(dict(rs[0], tint=tint))
+    return merged
+
+
 def _unit_md(name, u, index):
     L = ['# %s' % name, '',
          'Formation `%s`, culture `%s`, combat `%s`. Defined by: %s.' % (u['formation'], u['culture'], u['combat'], ', '.join(u['src']) or '?'), '']
@@ -258,7 +276,7 @@ def _unit_md(name, u, index):
                         rows = _part_rows(index, at, br)
                         if not br['found']:
                             L.append('| %s | %s | %s | %s/%s | - | - | bin/group not found | |' % (at['attachment'], at['point'], at['tint'] or '', br['bin'], br['group']))
-                        for r in rows:
+                        for r in _merge_cultures(rows):
                             note = ''
                             if r['status'] == 'exported':
                                 pkg, info = r['hits'][0]

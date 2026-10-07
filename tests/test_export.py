@@ -201,6 +201,13 @@ class ArtdefsOnSyntheticFiles(unittest.TestCase):
         self.assertEqual(blp_artdefs.ModelIndex(res, self.g).find('Hero_Head', 'units/units')[0], 'blp-unreadable')
         self.assertEqual(blp_artdefs.ModelIndex([], self.g).find('Hero_Head', 'units/units')[0], 'blp-not-examined')
 
+    def test_cultures_of_one_asset_collapse_into_one_row(self):
+        rows = [dict(entry='Hands', culture=c, tint=t) for c, t in (('Any', 'Pale'), ('Asian', 'Tan'), ('African', 'Tan'))] + [dict(entry='Other', culture='Any', tint='Pale')]
+        merged = {r['entry']: r['tint'] for r in blp_artdefs._merge_cultures(rows)}
+        self.assertEqual(merged, {'Hands': 'Pale (Any); Tan (Asian, African)', 'Other': 'Pale'})
+        same = blp_artdefs._merge_cultures([dict(entry='H', culture=c, tint='Tan') for c in ('Any', 'Asian')])
+        self.assertEqual([r['tint'] for r in same], ['Tan'])
+
     def test_report_files(self):
         res = [dict(package='Pack', path=self.g + '/DLC/Pack/Platforms/Windows/BLPs/units/units.blp', models=1,
                     modelInfo=[dict(name='Hero_Body', cls='Unit', files=['Hero_Body'], bones=3, tris=10, textures=['T'], skinned=True)])]

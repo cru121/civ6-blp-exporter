@@ -2,6 +2,10 @@
 
 Versions follow [semantic versioning](https://semver.org/) (0.x: the command line and output layout may still change between minor versions). `python civ6_blp_export.py --version` prints the current one.
 
+## [Unreleased]
+
+- Unit reports: a bin that lists the same asset once per culture (e.g. `BaseMale_Bodies/Hands`, 12 cultures) is now one row, with the tints grouped by culture, instead of looking like duplicate lines. The "also shipped by" list is capped at five packages.
+
 ## 0.3.0 - 2026-10-07
 
 Dependency report, and the reader now handles the Base game's big BLPs.
