@@ -11,6 +11,7 @@ import json, os, struct
 import numpy as np
 from blp_assemble import bone_matrix
 from blp_anim import classify
+from blp_models import safe_name
 
 
 class _Buf:
@@ -46,13 +47,16 @@ def export_gltf(L, model, outdir, tag='', animations=None):
     # node 0: Z-up -> Y-up root
     s = 2 ** -0.5
     nodes.append(dict(name='Z_up_to_Y_up', rotation=[-s, 0, 0, s], children=[]))
-    for i, name in enumerate(d['bones']):
-        xf = d['boneXforms'][i]
-        nodes.append(dict(name=name or 'bone%d' % i, **_trs(xf)))
-    for i in range(nb):
-        p = d['boneXforms'][i]['parent']
-        (nodes[0] if p < 0 else nodes[1 + p]).setdefault('children', []).append(1 + i)
-    bone_node = lambda i: 1 + i
+    sks = d.get('skeletons') or [dict(name=d['name'], bones=d['bones'], xforms=d['boneXforms'])]
+    base = []                                              # node index of bone 0 of each skeleton (skeleton 0 starts at node 1)
+    for k, sk in enumerate(sks):
+        base.append(len(nodes))
+        for i, name in enumerate(sk['bones']):
+            nodes.append(dict(name=name or 'bone%d' % i, **_trs(sk['xforms'][i])))
+        for i in range(len(sk['bones'])):
+            p = sk['xforms'][i]['parent']
+            (nodes[0] if p < 0 else nodes[base[k] + p]).setdefault('children', []).append(base[k] + i)
+    bone_node = lambda i, sk=0: base[sk] + i
 
     meshes, skins, materials, textures, images = [], [], [], [], []
     mat_index, tex_index, acc_cache, skin_of_vb = {}, {}, {}, {}
@@ -117,9 +121,10 @@ def export_gltf(L, model, outdir, tag='', animations=None):
         if prims[0][1]:                                   # skinned mesh
             bd = d['meshBindings'][mi]
             jids = d['boneIds'][bd['fromStart']:bd['fromStart'] + bd['fromCount']]
-            ibm = np.array([d['boneXforms'][j]['invWorld'] for j in jids], '<f4')
-            skins.append(dict(joints=[bone_node(j) for j in jids], inverseBindMatrices=B.add(ibm, None, componentType=5126, count=len(jids), type='MAT4'),
-                              skeleton=bone_node(0) if nb else None))
+            fsk = min(bd.get('fromSkeleton', 0), len(sks) - 1)            # the skeleton these bone IDs index
+            ibm = np.array([sks[fsk]['xforms'][j]['invWorld'] for j in jids], '<f4')
+            skins.append(dict(joints=[bone_node(j, fsk) for j in jids], inverseBindMatrices=B.add(ibm, None, componentType=5126, count=len(jids), type='MAT4'),
+                              skeleton=bone_node(0, fsk) if sks[fsk]['bones'] else None))
             if skins[-1]['skeleton'] is None: del skins[-1]['skeleton']
             node['skin'] = len(skins) - 1
         nodes.append(node); scene_children.append(len(nodes) - 1)
@@ -155,12 +160,12 @@ def export_gltf(L, model, outdir, tag='', animations=None):
         if channels:
             gl_anims.append(dict(name=anim['name'].replace('ANIMATION_', ''), channels=channels, samplers=samplers))
     gltf = dict(asset=dict(version='2.0', generator='civ6-blp-exporter'), scene=0, scenes=[dict(nodes=[0] + [c for c in scene_children[1:]])],
-                nodes=nodes, meshes=meshes, accessors=B.acc, bufferViews=B.views, buffers=[dict(uri=(d['name'] + tag + '.bin'), byteLength=len(B.data))])
+                nodes=nodes, meshes=meshes, accessors=B.acc, bufferViews=B.views, buffers=[dict(uri=(safe_name(d['name']) + tag + '.bin'), byteLength=len(B.data))])
     if skins: gltf['skins'] = skins
     if gl_anims: gltf['animations'] = gl_anims
     if materials: gltf['materials'] = materials
     if textures: gltf['textures'] = textures; gltf['images'] = images
-    fn = os.path.join(outdir, d['name'] + tag + '.gltf')
+    fn = os.path.join(outdir, safe_name(d['name']) + tag + '.gltf')
     open(fn, 'w').write(json.dumps(gltf))
-    open(os.path.join(outdir, d['name'] + tag + '.bin'), 'wb').write(bytes(B.data))
+    open(os.path.join(outdir, safe_name(d['name']) + tag + '.bin'), 'wb').write(bytes(B.data))
     return fn

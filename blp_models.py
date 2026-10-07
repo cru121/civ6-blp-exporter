@@ -7,7 +7,7 @@ Generalises palgum_export.py. Uses blp_reader.py. Vertex format (all 24-byte VBs
   half3 pos @0 (Z up), snorm8 nx @6, ny @7 (nz = +sqrt(1-nx^2-ny^2)), half2 UV0 @8 (D3D v-down).
 Index buffers are u16; each prim group has its own baseVertex. Decal VBs (8 B/vertex) are skipped.
 """
-import json, os, struct, sys
+import json, os, re, struct, sys
 import numpy as np
 from blp_reader import Blp
 
@@ -15,6 +15,11 @@ STATE_BITS = ['Construction', 'Pillaged', 'Unbuilt', 'Unworked', 'Worked']   # o
 VB_FORMAT_24 = 828177625
 VB_FORMAT_32_SKIN = 1719251312   # 32 B: half3 pos@0, snorm8 nx@6 ny@7, half2 uv@8, u8[4] bone idx@12, u8[4] weights@16 (+unknown @20-23, 8 B zero)
 MAT_SLOTS = ['lean0', 'lean1', 'diffuse', 'roughness', 'metalness', 'opacity', 'ao', 'lightmap', 'emission']  # u32 at ModelMaterialData +28..+56
+
+
+def safe_name(name):
+    """model name -> file name: Windows-invalid characters (| / ? : ...) become '_'"""
+    return re.sub(r'[<>:"/|?*\x00-\x1f]', '_', name).strip(' .') or '_'
 
 
 def states(mask):
@@ -66,28 +71,30 @@ class Landmarks:
     def _model(self, e):
         m, d = self.m, self.d
         ga, gn = m.vec(e + 160 + 256)
-        if gn:
-            gm = m.addr(m.u64(ga))
-            name = m.bstr(gm + 208)
+        skeletons = []                                   # a model can hold several Granny models (skeletons); mesh bindings say which one they use
+        for k in range(gn):
+            gm = m.addr(m.u64(ga + 8 * k))
+            sk_name = m.bstr(gm + 208)
             na, nn = m.vec(gm + 112 + 72)
-            bones = [m.bstr(na + i * 8) for i in range(nn)]
+            sk_bones = [m.bstr(na + i * 8) for i in range(nn)]
             ba, bn = m.vec(gm + 112 + 48)            # granny_bone (164 B): parent@8, LocalTransform@12 {flags, pos[3]@16, quat xyzw@28, scaleShear 3x3@44}
-            xforms = []
+            sk_xforms = []
             for i in range(bn):
                 o = ba + i * 164
                 par, flags = struct.unpack_from('<iI', d, o + 8)
-                xforms.append(dict(parent=par, flags=flags, pos=list(struct.unpack_from('<3f', d, o + 16)),
-                                   quat=list(struct.unpack_from('<4f', d, o + 28)), scaleShear=list(struct.unpack_from('<9f', d, o + 44)),
-                                   invWorld=list(struct.unpack_from('<16f', d, o + 80))))     # Granny InverseWorld4x4 (row-vector convention)
-        else:
-            name, bones, xforms = None, [], []
+                sk_xforms.append(dict(parent=par, flags=flags, pos=list(struct.unpack_from('<3f', d, o + 16)),
+                                      quat=list(struct.unpack_from('<4f', d, o + 28)), scaleShear=list(struct.unpack_from('<9f', d, o + 44)),
+                                      invWorld=list(struct.unpack_from('<16f', d, o + 80))))     # Granny InverseWorld4x4 (row-vector convention)
+            skeletons.append(dict(name=sk_name, bones=sk_bones, xforms=sk_xforms))
+        name, bones, xforms = (skeletons[0]['name'], skeletons[0]['bones'], skeletons[0]['xforms']) if skeletons else (None, [], [])      # skeleton 0 = the model's own
         ia, inn = m.vec(e + 160 + 136)
         bone_ids = [struct.unpack_from('<i', d, ia + i * 4)[0] for i in range(inn)] if ia else []     # MeshBindingBoneIDs: local bone index -> skeleton bone
         ba2, nb2 = m.vec(e + 160 + 184)                                                              # MeshBindings, one per mesh
         bindings = []
         for i in range(nb2):
             fs, fc = struct.unpack_from('<IH', d, ba2 + i * 20 + 8)
-            bindings.append(dict(fromStart=fs, fromCount=fc))
+            from_sk = min(d[ba2 + i * 20], max(gn - 1, 0))                                          # nFromSkeleton: which skeleton the bone IDs index
+            bindings.append(dict(fromStart=fs, fromCount=fc, fromSkeleton=from_sk))
         mesh_bone = []
         for i in range(max(len(bindings), 0)):
             b_ = bindings[i]
@@ -103,7 +110,8 @@ class Landmarks:
                 ud, _ = m.vec(pg_a + g * 32 + 8)
                 vb, ib, first, cnt, base, vc = struct.unpack_from('<6I', d, m.addr(m.u64(ud)) + 8)
                 groups.append(dict(group=g, stateMask=sm, states=states(sm), materialID=mat, vb=vb, ib=ib, firstIndex=first, indexCount=cnt, baseVertex=base, vertCount=vc))
-            bone = bones[mesh_bone[mi]] if mi < len(mesh_bone) and 0 <= mesh_bone[mi] < len(bones) else None
+            sk_bones = skeletons[bindings[mi]['fromSkeleton']]['bones'] if mi < len(bindings) and skeletons else bones
+            bone = sk_bones[mesh_bone[mi]] if mi < len(mesh_bone) and 0 <= mesh_bone[mi] < len(sk_bones) else None
             meshes.append(dict(mesh=mi, bone=bone, groups=groups))
         materials = []
         ma, mn = m.vec(e + 8 + 80)
@@ -121,7 +129,7 @@ class Landmarks:
                     v, = struct.unpack_from('<I', d, o + 8)
                     mat['burnMap'] = self.textures[v]['name'] if v < len(self.textures) else None
             materials.append(mat)
-        return dict(name=name, className=m.bstr(e + 8), bones=bones, meshes=meshes, materials=materials, boneXforms=xforms, boneIds=bone_ids, meshBindings=bindings)
+        return dict(name=name, className=m.bstr(e + 8), bones=bones, meshes=meshes, materials=materials, boneXforms=xforms, boneIds=bone_ids, meshBindings=bindings, skeletons=skeletons)
 
     def vertices(self, vbi):
         v, b = self.vbs[vbi], self.blp
@@ -277,8 +285,8 @@ class Landmarks:
             voff[vbi] = sum(len(x) for x in Ps)
             p, u, n = self.vertices(vbi); Ps.append(p); UVs.append(u); Ns.append(n)
         P, UV, N = np.concatenate(Ps), np.concatenate(UVs), np.concatenate(Ns)
-        fn = os.path.join(outdir, model['name'] + tag + '.obj')
-        mtl = self.write_materials(model, groups, outdir, model['name'] + tag + '.mtl')
+        fn = os.path.join(outdir, safe_name(model['name']) + tag + '.obj')
+        mtl = self.write_materials(model, groups, outdir, safe_name(model['name']) + tag + '.mtl')
         with open(fn, 'w') as f:
             f.write('# %s from %s. Z-up. objects = bone__group_states_material; vertex buffers: %s\n' % (model['name'], os.path.basename(getattr(self, 'blp_path', '')), ', '.join(self.vbs[v]['name'] for v in used_vb)))
             for v in P: f.write('v %.5f %.5f %.5f\n' % tuple(v))
@@ -291,7 +299,7 @@ class Landmarks:
                 f.write('usemtl mat%d\n' % g['materialID'])
                 for t in (IDX[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex'] + voff[g['vb']]).reshape(-1, 3) + 1:
                     f.write('f ' + ' '.join('%d/%d/%d' % (x, x, x) for x in t) + '\n')
-        json.dump(dict(model, vertexBuffers=[self.vbs[v]['name'] for v in used_vb], stateBits=STATE_BITS), open(os.path.join(outdir, model['name'] + tag + '.json'), 'w'), indent=1)
+        json.dump(dict({k: v for k, v in model.items() if k != 'skeletons'}, skeletonNames=[sk['name'] for sk in model.get('skeletons', [])], vertexBuffers=[self.vbs[v]['name'] for v in used_vb], stateBits=STATE_BITS), open(os.path.join(outdir, safe_name(model['name']) + tag + '.json'), 'w'), indent=1)
         return fn
 
 

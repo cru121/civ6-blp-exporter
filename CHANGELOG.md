@@ -4,6 +4,8 @@ Versions follow [semantic versioning](https://semver.org/) (0.x: the command lin
 
 ## [Unreleased]
 
+- **Multi-skeleton models:** a model can hold several skeletons (e.g. an elephant resource with a grass skeleton and an 18-bone elephant); the exporter only read the first, so the glTF of 24 such models failed (cranes, kurgans, mills, resource animals, wonder cameras...). Each mesh binding names its skeleton, and the glTF now carries all of them.
+- **File names:** models whose names contain characters Windows does not allow (`|`, `/`) are written with `_` instead of failing (4 tilebases).
 - Unit reports: a bin that lists the same asset once per culture (e.g. `BaseMale_Bodies/Hands`, 12 cultures) is now one row, with the tints grouped by culture, instead of looking like duplicate lines. The "also shipped by" list is capped at five packages.
 
 ## 0.3.0 - 2026-10-07

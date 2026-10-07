@@ -240,3 +240,40 @@ class AnansiReport(unittest.TestCase):
         self.assertGreater(len(names), 500)
         self.assertIn('Male_African_Head_01', names)
         self.assertEqual(len([m for m in Landmarks(babylon).models if m['name']]), 36)       # the shifted-by-one table must not be picked
+
+
+class FileNames(unittest.TestCase):
+    def test_safe_name(self):
+        from blp_models import safe_name
+        self.assertEqual(safe_name('|IMP_Chateau_Wall_PIL'), '_IMP_Chateau_Wall_PIL')
+        self.assertEqual(safe_name('DIS_HBR_Classical_Shack w/Door'), 'DIS_HBR_Classical_Shack w_Door')
+        self.assertEqual(safe_name('plain_Name-01'), 'plain_Name-01')
+
+
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class MultiSkeletonModels(unittest.TestCase):
+    def test_skin_uses_the_skeleton_named_by_its_binding(self):
+        """RES_Ele_Grass04 holds a 1-bone grass skeleton and an 18-bone elephant; the skinned mesh binds to the second."""
+        import blp_gltf, blp_textures
+        from blp_models import Landmarks
+        g = ex.find_game(None)
+        p = os.path.join(g, 'Base', 'Platforms', 'Windows', 'BLPs', 'environment', 'clutter.blp')
+        if not os.path.exists(p):
+            self.skipTest('Base clutter.blp not found')
+        blp_textures.set_game(g)
+        L = Landmarks(p)
+        md = next(m for m in L.models if m['name'] == 'RES_Ele_Grass04')
+        self.assertEqual([len(s['bones']) for s in md['skeletons']], [1, 18])
+        self.assertEqual([b['fromSkeleton'] for b in md['meshBindings']], [0, 1])
+        out = tempfile.mkdtemp()
+        try:
+            fn = blp_gltf.export_gltf(L, md, out)
+            with open(fn) as f:
+                j = json.load(f)
+            self.assertEqual(len(j['skins']), 1)
+            self.assertEqual(len(j['skins'][0]['joints']), 17)
+            issues = []
+            blp_validate.check_gltf(fn, issues)
+            self.assertEqual(issues, [])
+        finally:
+            shutil.rmtree(out, ignore_errors=True)

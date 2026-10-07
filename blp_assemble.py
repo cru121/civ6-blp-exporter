@@ -11,7 +11,7 @@ external/placeholders in the JSON (their meshes live in other BLPs).
 """
 import json, os, re, sys
 import numpy as np
-from blp_models import Landmarks
+from blp_models import Landmarks, safe_name
 
 
 def quat_matrix(q):
@@ -48,7 +48,7 @@ def assemble(L, asm, outdir, state='Worked'):
             xf = asm['boneXforms'][i]
             world[i] = (wm(xf['parent']) if xf['parent'] >= 0 else np.eye(4)) @ bone_matrix(xf)
         return world[i]
-    mtl = asm['name'] + '_' + state + '.mtl'
+    mtl = safe_name(asm['name']) + '_' + state + '.mtl'
     open(os.path.join(outdir, mtl), 'w').close()
     parts_done = {}                              # id(part) -> prefix
     verts, uvs, norms, faces = [], [], [], []    # faces: (objname, usemtl, [idx...])
@@ -82,7 +82,7 @@ def assemble(L, asm, outdir, state='Worked'):
             I = L.indices(g['ib'])[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex'] + local[g['vb']][0]
             faces.append(('%s__%s_g%d' % (bname, part['name'], g['group']), '%smat%d' % (parts_done[pi], g['materialID']), I.reshape(-1, 3) + 1))
         report['placed'].append(dict(bone=bname, part=part['name'], pos=[round(x, 3) for x in asm['boneXforms'][i]['pos']], flags=asm['boneXforms'][i]['flags']))
-    fn = os.path.join(outdir, asm['name'] + '_assembled_' + state + '.obj')
+    fn = os.path.join(outdir, safe_name(asm['name']) + '_assembled_' + state + '.obj')
     if not verts:                                # a skeleton-only node whose parts live elsewhere (e.g. a unit's 'Root'): nothing to draw
         return None, report
     V, UV, N = np.concatenate(verts), np.concatenate(uvs), np.concatenate(norms)
@@ -95,7 +95,7 @@ def assemble(L, asm, outdir, state='Worked'):
         for name, mat, I in faces:
             f.write('o %s\nusemtl %s\n' % (name, mat))
             for t in I: f.write('f ' + ' '.join('%d/%d/%d' % (x, x, x) for x in t) + '\n')
-    json.dump(report, open(os.path.join(outdir, asm['name'] + '_assembly_' + state + '.json'), 'w'), indent=1)
+    json.dump(report, open(os.path.join(outdir, safe_name(asm['name']) + '_assembly_' + state + '.json'), 'w'), indent=1)
     return fn, report
 
 

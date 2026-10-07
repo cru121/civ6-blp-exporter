@@ -135,7 +135,7 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
         tag = '_%02d' % i if names.count(md['name']) > 1 else ''
         try:
             import blp_gltf
-            from blp_models import model_for_state
+            from blp_models import model_for_state, safe_name
             matched = matching_animations(md, anims, max_anims) if anims else []
             # without --states: one export with every state's geometry; with it: one export per state, containing only that state's groups
             variants = [(md, tag)] if not model_states else [(model_for_state(md, st), '%s__%s' % (tag, st)) for st in model_states]
@@ -144,7 +144,7 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
             for variant, vtag in variants:
                 if variant is None:
                     continue
-                files.append(md['name'] + vtag)
+                files.append(safe_name(md['name']) + vtag)
                 L.export(variant, mdir, vtag)
                 blp_gltf.export_gltf(L, variant, mdir, vtag, matched)       # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
                 n += 1
@@ -168,7 +168,7 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
                     if rep['placed']:
                         rec['assemblies'].append(dict(name=md['name'], state=st, placed=len(rep['placed']), external=len(rep['external']), missing=len(rep['missing'])))
                     else:
-                        for ext in glob.glob(os.path.join(adir, md['name'] + '*_' + st + '.*')): os.remove(ext)
+                        for ext in glob.glob(os.path.join(adir, glob.escape(safe_name(md['name'])) + '*_' + st + '.*')): os.remove(ext)
                 except Exception as e:
                     rec['errors'].append('assembly %s/%s: %s' % (md['name'], st, e))
     if os.path.isdir(tdir):
