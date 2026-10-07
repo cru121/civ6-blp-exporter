@@ -13,6 +13,8 @@ reference - don't redistribute Firaxis assets.
 """
 import argparse, glob, json, os, re, sys, time, traceback
 
+__version__ = '0.3.0-dev'      # see CHANGELOG.md
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -184,6 +186,7 @@ def inspect_blp(pkg, path):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Export Civ6 BLP models (OBJ + textures + assemblies).')
+    ap.add_argument('--version', action='version', version='civ6-blp-exporter ' + __version__)
     ap.add_argument('inputs', nargs='+', help='.blp file, folder, "Base", or a DLC folder name (e.g. Babylon)')
     ap.add_argument('-o', '--out', default='civ6_export', help='output folder (default ./civ6_export)')
     ap.add_argument('--game', help="Civ6 install folder (auto-detected from Steam/Epic if omitted; or set CIV6_DIR)")
