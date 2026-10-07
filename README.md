@@ -26,7 +26,7 @@ Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <
 
 Output: `<out>/<package>__<blp>/{models,assemblies,textures}/` — `.obj` + `.mtl` (+ `.json` with the mesh/bone/state/material data), shared decoded `textures/*.png`, and `summary.md` / `summary.json`.
 Object names inside an OBJ look like `Palgum_bld__g5_Unworked+Worked_mat0`: bone/mesh name, group, the tile states in which that group is visible, material.
-Open the OBJs (or, for skinned units, the `.gltf`) in Blender (Z-up; enable the material import), MeshLab, etc. `python obj_raster.py model.obj out.png` makes a quick textured preview.
+Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs in Blender (OBJ is Z-up) or any glTF viewer, MeshLab, etc. `python obj_raster.py model.obj out.png` makes a quick textured preview.
 
 ## Files
 | File | Purpose |
@@ -43,13 +43,25 @@ Open the OBJs (or, for skinned units, the `.gltf`) in Blender (Z-up; enable the 
 ## Limits
 **Models**
 - Two vertex formats are decoded: static 24-byte meshes (landmarks) and skinned 32-byte meshes (units/heroes: bone indices + weights).
-- Skinned models are also written as `.gltf` (+`.bin`) with the skeleton and skin (Y-up); the OBJ is the bind pose without skin.
+- Every model is also written as `.gltf` (+`.bin`, Y-up) with its materials; skinned models additionally get the skeleton, skin and animations. The OBJ is the bind pose without skin. Tile-state variants (Worked, Pillaged, ...) are separate primitives with the states in `extras.states`, so a viewer shows them all overlapped.
 - Unit models are called `Root`/`skin_root` in the files, so they are named after their vertex buffer (e.g. `Anansi_Body`).
 - Bytes 20-23 of the skinned vertex (probably tangent) and the second UV set of static vertices are not decoded.
 
 **Materials**
-- Normal maps are the game's LEAN format; exported as an ordinary normal map (first map only).
-- Gloss/roughness maps are exported as `map_Ns` (non-standard). Metalness, lightmap, burn and snow maps are listed in the MTL as comments only.
+- Materials are converted to glTF metallic-roughness (and the PBR extension of MTL). The game's slots map as follows:
+
+  | Civ6 slot | Result |
+  |---|---|
+  | diffuse (`..._B_null`, sRGB) | base colour; RGBA with the opacity map as alpha (`alphaMode: BLEND`) when there is one |
+  | lean0 (BC5 x,y) | normal map, z rebuilt. The green channel is already +Y-up (OpenGL/glTF convention), so it is not flipped |
+  | roughness (`..._G`, a gloss map) | roughness = 1 - gloss, linearised (the texture is `*_SRGB`). The map holds one signal in all three channels; the green channel is used |
+  | ao (BC4) | occlusion |
+  | metalness (BC4) | metalness (missing = 0; missing AO = 1) |
+  | emission (sRGB) | emissive |
+
+  AO, roughness and metalness are packed into one `*_ORM.png` (R = AO, G = roughness, B = metalness) used for both `occlusionTexture` and `metallicRoughnessTexture`; the MTL gets the same data as separate `map_Pr` / `map_Pm` / `map_Ka` images. Maps of different sizes are resized to the largest.
+- These semantics are inferred from the data, not from the game's shaders: the Y-up normal convention was checked by integrating the normal maps into heightfields and correlating them with the diffuse maps, and roughness = 1 - gloss is an assumption (the real shader may use a different gloss curve).
+- Not converted (listed in the glTF material `extras`/MTL comments): lean1 (second LEAN map), lightmap, burn and snow maps. Player-colour tinting of the diffuse map is not applied.
 
 **Assemblies**
 - Parts from the same BLP are placed; trees, shrubs and props from other BLPs, and road control points, are listed in the assembly JSON as "external" but not drawn.

@@ -57,8 +57,7 @@ def export_gltf(L, model, outdir, tag='', animations=None):
     meshes, skins, materials, textures, images = [], [], [], [], []
     mat_index, tex_index, acc_cache, skin_of_vb = {}, {}, {}, {}
 
-    def texture(name):
-        rel = L.texture_png(name, outdir) if name else None
+    def texture(rel):
         if not rel: return None
         if rel not in tex_index:
             images.append(dict(uri=rel)); textures.append(dict(source=len(images) - 1)); tex_index[rel] = len(textures) - 1
@@ -67,10 +66,21 @@ def export_gltf(L, model, outdir, tag='', animations=None):
     def material(k):
         if k not in mat_index:
             mt = d['materials'][k] if k < len(d['materials']) else {}
+            maps = L.pbr_maps(mt, outdir)
             m = dict(name='mat%d' % k, doubleSided=True, pbrMetallicRoughness=dict(metallicFactor=0.0, roughnessFactor=1.0))
-            t = texture(mt.get('diffuse'))
+            t = texture(maps.get('baseColor'))
             if t is not None: m['pbrMetallicRoughness']['baseColorTexture'] = dict(index=t)
-            e = texture(mt.get('emission'))
+            if maps.get('alpha'): m['alphaMode'] = 'BLEND'
+            n = texture(maps.get('normal'))
+            if n is not None: m['normalTexture'] = dict(index=n)
+            o = texture(maps.get('orm'))                  # R = AO, G = roughness, B = metalness
+            if o is not None:
+                has = maps['has']
+                if has['ao']: m['occlusionTexture'] = dict(index=o)
+                m['pbrMetallicRoughness']['metallicRoughnessTexture'] = dict(index=o)
+                m['pbrMetallicRoughness']['metallicFactor'] = 1.0 if has['metal'] else 0.0       # B is 0 without a metalness map anyway
+                m['pbrMetallicRoughness']['roughnessFactor'] = 1.0
+            e = texture(maps.get('emissive'))
             if e is not None: m['emissiveTexture'] = dict(index=e); m['emissiveFactor'] = [1.0, 1.0, 1.0]
             m['extras'] = {k_: v for k_, v in mt.items() if k_ != 'index'}
             materials.append(m); mat_index[k] = len(materials) - 1

@@ -134,10 +134,10 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
         try:
             L.export(md, mdir, tag)
             rec['exported'] += 1
-            if len(md['bones']) > 1 and any(L.vbs[g['vb']]['fmt'] != 828177625 for me in md['meshes'] for g in me['groups']):
+            if True:                                                  # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
                 import blp_gltf
                 matched = matching_animations(md, anims, max_anims) if anims else []
-                blp_gltf.export_gltf(L, md, mdir, tag, matched)       # skinned: also write glTF with skeleton + weights (+ animations)
+                blp_gltf.export_gltf(L, md, mdir, tag, matched)
                 rec['gltf'] = rec.get('gltf', 0) + 1
                 rec['animations'] = rec.get('animations', 0) + len(matched)
         except Exception as e:

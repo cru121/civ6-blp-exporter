@@ -160,20 +160,100 @@ class Landmarks:
                 print('  texture %s: %s' % (name, e)); return None
         return rel
 
+    def texture_array(self, name):
+        """Decoded top mip of a loose texture as (uint8 array h,w,c, DXGI format), or None."""
+        import blp_textures as bt
+        tex = next((t for t in self.textures if t['name'] == name), None)
+        path = bt.texture_index().get(name)
+        if not tex or not path:
+            return None
+        try:
+            return bt.decode(open(path, 'rb').read(), tex['fmt'], tex['w'], tex['h']), tex['fmt']
+        except Exception as e:
+            print('  texture %s: %s' % (name, e)); return None
+
+    def _save_png(self, arr, stem, outdir):
+        from PIL import Image
+        tdir = getattr(self, 'texture_dir', None) or os.path.join(outdir, 'textures')
+        os.makedirs(tdir, exist_ok=True)
+        full = os.path.join(tdir, stem + '.png')
+        Image.fromarray(arr[:, :, 0] if arr.shape[2] == 1 else arr).save(full)
+        return os.path.relpath(full, outdir).replace(os.sep, '/')
+
+    def pbr_maps(self, mat, outdir):
+        """Convert one Civ6 material to glTF metallic-roughness semantics. Returns {key: relative png path}:
+          baseColor  diffuse (sRGB); with the opacity map folded into alpha when there is one (+ 'alpha': True)
+          normal     lean0 (BC5 x,y -> RGB with z rebuilt); Civ6's green channel is already +Y-up (OpenGL / glTF convention)
+          orm        R = AO, G = roughness, B = metalness (glTF packing; same image serves occlusion and metallicRoughness)
+          roughness / metallic / occlusion   the same three as separate grayscale images (for MTL)
+          emissive   emission (sRGB)
+        Roughness = 1 - gloss: the 'roughness' slot is a gloss map stored as RGB with the same signal in all three channels,
+        so the green channel is used (best precision in BC1), and since it is a *_SRGB format it is linearised first.
+        AO and metalness are BC4 UNORM (already linear). Missing AO = 1, missing metalness = 0."""
+        import zlib
+        from PIL import Image
+        cache = self.__dict__.setdefault('_pbr_cache', {})
+        key = tuple(mat.get(s) for s in ('diffuse', 'opacity', 'lean0', 'roughness', 'metalness', 'ao', 'emission'))
+        if key in cache:
+            return cache[key]
+        out = {}
+
+        def resized(arr, w, h):
+            return arr if arr.shape[1] == w and arr.shape[0] == h else np.asarray(Image.fromarray(arr[:, :, 0]).resize((w, h), Image.BILINEAR))[:, :, None]
+
+        d = self.texture_array(mat['diffuse']) if mat.get('diffuse') else None
+        if d is not None:
+            rgb = d[0][:, :, :3]
+            op = self.texture_array(mat['opacity']) if mat.get('opacity') else None
+            if op is not None:
+                a = resized(op[0][:, :, :1], rgb.shape[1], rgb.shape[0])
+                out['baseColor'] = self._save_png(np.concatenate([rgb, a], 2), mat['diffuse'] + '_RGBA', outdir); out['alpha'] = True
+            else:
+                out['baseColor'] = self.texture_png(mat['diffuse'], outdir)
+        if mat.get('lean0'):
+            out['normal'] = self.texture_png(mat['lean0'], outdir)
+        if mat.get('emission'):
+            out['emissive'] = self.texture_png(mat['emission'], outdir)
+        gloss = self.texture_array(mat['roughness']) if mat.get('roughness') else None
+        metal = self.texture_array(mat['metalness']) if mat.get('metalness') else None
+        ao = self.texture_array(mat['ao']) if mat.get('ao') else None
+        parts = [p for p in (ao, gloss, metal) if p is not None]
+        if parts:
+            w, h = max(p[0].shape[1] for p in parts), max(p[0].shape[0] for p in parts)
+            R = resized(ao[0][:, :, :1], w, h)[:, :, 0] if ao else np.full((h, w), 255, np.uint8)
+            B = resized(metal[0][:, :, :1], w, h)[:, :, 0] if metal else np.zeros((h, w), np.uint8)
+            if gloss:
+                g = resized(gloss[0][:, :, 1:2] if gloss[0].shape[2] > 1 else gloss[0], w, h)[:, :, 0].astype(float) / 255
+                if gloss[1] in (72, 78):                                      # BC1/BC3 *_SRGB -> linear
+                    g = np.where(g <= 0.04045, g / 12.92, ((g + 0.055) / 1.055) ** 2.4)
+                G = np.round((1 - g) * 255).astype(np.uint8)
+            else:
+                G = np.full((h, w), 255, np.uint8)
+            stem = (mat.get('roughness') or mat.get('ao') or mat.get('metalness')) + '_%08x' % (zlib.crc32(repr(key[3:6]).encode()))
+            out['orm'] = self._save_png(np.stack([R, G, B], 2), stem + '_ORM', outdir)
+            if gloss: out['roughness'] = self._save_png(G[:, :, None], stem + '_roughness', outdir)
+            if metal: out['metallic'] = self._save_png(B[:, :, None], stem + '_metallic', outdir)
+            if ao: out['occlusion'] = self._save_png(R[:, :, None], stem + '_occlusion', outdir)
+            out['has'] = dict(ao=ao is not None, roughness=gloss is not None, metal=metal is not None)
+        cache[key] = out
+        return out
+
     def write_materials(self, model, groups, outdir, fname, prefix='', mode='w'):
         used = sorted({g['materialID'] for _, g in groups})
         with open(os.path.join(outdir, fname), mode) as f:
-            f.write('# slots: diffuse=map_Kd emission=map_Ke ao=map_Ka lean0=map_Bump(normal, BC5 xy) roughness(gloss)=map_Ns opacity=map_d ; others listed as comments\n')
+            f.write('# PBR MTL: map_Kd=base colour (RGBA if the material has an opacity map) map_Ke=emission map_Pr=roughness (=1-gloss, linear) map_Pm=metalness norm=normal map (+Y up) map_Ka=ambient occlusion\n')
             for k in used:
                 mat = model['materials'][k]
-                f.write('newmtl %smat%d\nKd 1 1 1\nKa 1 1 1\n' % (prefix, k))
-                for slot, key in (('diffuse', 'map_Kd'), ('emission', 'map_Ke'), ('ao', 'map_Ka'), ('lean0', 'map_Bump'), ('roughness', 'map_Ns'), ('opacity', 'map_d')):
+                f.write('newmtl %smat%d\nKd 1 1 1\nKa 1 1 1\nPr 1\nPm 0\n' % (prefix, k))
+                maps = self.pbr_maps(mat, outdir)
+                for slot, key in (('baseColor', 'map_Kd'), ('emissive', 'map_Ke'), ('roughness', 'map_Pr'), ('metallic', 'map_Pm'), ('normal', 'norm'), ('occlusion', 'map_Ka')):
+                    if maps.get(slot):
+                        f.write('%s %s\n' % (key, maps[slot]))
+                if maps.get('emissive'):
+                    f.write('Ke 1 1 1\n')
+                for slot in ('lean1', 'lightmap', 'burnMap'):
                     if mat.get(slot):
-                        rel = self.texture_png(mat[slot], outdir)
-                        f.write(('%s %s\n' % (key, rel)) if rel else '# %s: %s (file not found/unsupported)\n' % (slot, mat[slot]))
-                for slot in ('lean1', 'metalness', 'lightmap', 'burnMap'):
-                    if mat.get(slot):
-                        f.write('# %s: %s\n' % (slot, mat[slot]))
+                        f.write('# %s: %s (not converted)\n' % (slot, mat[slot]))
                 f.write('\n')
         return fname
 
@@ -196,9 +276,11 @@ class Landmarks:
             for v in P: f.write('v %.5f %.5f %.5f\n' % tuple(v))
             for v in UV: f.write('vt %.5f %.5f\n' % (v[0], 1 - v[1]))
             for v in N: f.write('vn %.5f %.5f %.5f\n' % tuple(v))
+            f.write('mtllib %s\n' % os.path.basename(mtl))
             for bone, g in groups:
                 IDX = self.indices(g['ib'])
                 f.write('o %s__g%d_%s_mat%d\n' % (bone, g['group'], '+'.join(g['states']) or 'none', g['materialID']))
+                f.write('usemtl mat%d\n' % g['materialID'])
                 for t in (IDX[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex'] + voff[g['vb']]).reshape(-1, 3) + 1:
                     f.write('f ' + ' '.join('%d/%d/%d' % (x, x, x) for x in t) + '\n')
         json.dump(dict(model, vertexBuffers=[self.vbs[v]['name'] for v in used_vb], stateBits=STATE_BITS), open(os.path.join(outdir, model['name'] + tag + '.json'), 'w'), indent=1)
