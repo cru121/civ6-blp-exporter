@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org/) (0.x: the command line and output layout may still change between minor versions). `python civ6_blp_export.py --version` prints the current one.
 
-## [Unreleased]
+## 0.3.1 - 2026-10-07
 
 - **Multi-skeleton models:** a model can hold several skeletons (e.g. an elephant resource with a grass skeleton and an 18-bone elephant); the exporter only read the first, so the glTF of 24 such models failed (cranes, kurgans, mills, resource animals, wonder cameras...). Each mesh binding names its skeleton, and the glTF now carries all of them.
 - **File names:** models whose names contain characters Windows does not allow (`|`, `/`) are written with `_` instead of failing (4 tilebases).
