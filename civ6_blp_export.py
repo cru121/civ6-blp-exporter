@@ -110,7 +110,7 @@ def matching_animations(model, patterns, max_anims, min_cover=0.6):
     return out
 
 
-def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=20):
+def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=20, model_states=None):
     from blp_models import Landmarks
     import blp_assemble
     rec = dict(package=pkg, blp=os.path.basename(path), path=path, models=0, exported=0, assemblies=[], errors=[], textures=0)
@@ -132,14 +132,22 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
             continue
         tag = '_%02d' % i if names.count(md['name']) > 1 else ''
         try:
-            L.export(md, mdir, tag)
-            rec['exported'] += 1
-            if True:                                                  # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
-                import blp_gltf
-                matched = matching_animations(md, anims, max_anims) if anims else []
-                blp_gltf.export_gltf(L, md, mdir, tag, matched)
+            import blp_gltf
+            from blp_models import model_for_state
+            matched = matching_animations(md, anims, max_anims) if anims else []
+            # without --states: one export with every state's geometry; with it: one export per state, containing only that state's groups
+            variants = [(md, tag)] if not model_states else [(model_for_state(md, st), '%s__%s' % (tag, st)) for st in model_states]
+            n = 0
+            for variant, vtag in variants:
+                if variant is None:
+                    continue
+                L.export(variant, mdir, vtag)
+                blp_gltf.export_gltf(L, variant, mdir, vtag, matched)       # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
+                n += 1
                 rec['gltf'] = rec.get('gltf', 0) + 1
-                rec['animations'] = rec.get('animations', 0) + len(matched)
+            if n:
+                rec['exported'] += 1
+            rec['animations'] = rec.get('animations', 0) + len(matched)
         except Exception as e:
             rec['errors'].append('%s: %s' % (md['name'], e))
     for i, md in enumerate(L.models):
@@ -172,7 +180,8 @@ def main(argv=None):
     ap.add_argument('inputs', nargs='+', help='.blp file, folder, "Base", or a DLC folder name (e.g. Babylon)')
     ap.add_argument('-o', '--out', default='civ6_export', help='output folder (default ./civ6_export)')
     ap.add_argument('--game', help="Civ6 install folder (auto-detected from Steam/Epic if omitted; or set CIV6_DIR)")
-    ap.add_argument('--states', default='Worked,Pillaged', help='assembly states to build (Construction,Pillaged,Unbuilt,Unworked,Worked)')
+    ap.add_argument('--states', help='states to export (Construction,Pillaged,Unbuilt,Unworked,Worked): one OBJ/glTF per state (<name>__<State>) holding only the groups visible in that state, and the states of assemblies. Default: models contain every state together; assemblies Worked,Pillaged')
+    ap.add_argument('--validate', action='store_true', help='after exporting, check the output for missing textures/materials and other inconsistencies (exit code 1 if any error)')
     ap.add_argument('--platform', default='Windows', help='Platforms/<name> to read when given Base/DLC names (default Windows)')
     ap.add_argument('--list', action='store_true', help='only list the models inside, export nothing')
     ap.add_argument('--anim', nargs='+', metavar='NAME', help="add loose ANIMATION_* files whose name contains NAME (or 'all') to the glTF of skinned models, if their bone tracks fit the skeleton")
@@ -190,7 +199,8 @@ def main(argv=None):
     if not files:
         print('No .blp files found.'); return 1
     print('%d BLP file(s) to look at' % len(files))
-    states = [s.strip() for s in a.states.split(',') if s.strip()]
+    model_states = [s.strip() for s in a.states.split(',') if s.strip()] if a.states else None
+    states = model_states or ['Worked', 'Pillaged']
     results, t0 = [], time.time()
     for k, (pkg, path) in enumerate(files, 1):
         label = '%s/%s' % (pkg, os.path.basename(path))
@@ -200,7 +210,7 @@ def main(argv=None):
                 if r['models']:
                     print('%-48s models=%-3d vb=%-3d textures=%-3d assembly nodes=%s' % (label, r['models'], r['vertexBuffers'], r['textures'], ','.join(r['assemblyNodes']) or '-'))
                 results.append(r); continue
-            r = export_blp(pkg, path, a.out, states, not a.no_textures, a.anim, a.max_anims)
+            r = export_blp(pkg, path, a.out, states, not a.no_textures, a.anim, a.max_anims, model_states)
             if r['models']:
                 print('[%d/%d] %-44s models %d/%d exported, assemblies %d, textures %d%s' % (k, len(files), label, r['exported'], r['models'], len(r['assemblies']), r['textures'], ', %d error(s)' % len(r['errors']) if r['errors'] else ''))
             results.append(r)
@@ -226,6 +236,9 @@ def main(argv=None):
             f.write('## Unreadable BLPs\n')
             for r in failed: f.write('- %s/%s: %s\n' % (r['package'], r['blp'], r['error']))
     print('\nDone in %.0fs: %d BLP(s) with models, %d unreadable/skipped. Output: %s' % (time.time() - t0, len(with_models), len(failed), os.path.abspath(a.out)))
+    if a.validate:
+        import blp_validate
+        return 1 if blp_validate.report(a.out) else 0
     return 0
 
 

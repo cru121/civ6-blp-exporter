@@ -21,6 +21,14 @@ def states(mask):
     return [n for i, n in enumerate(STATE_BITS) if mask >> i & 1]
 
 
+def model_for_state(model, state):
+    """Copy of `model` keeping only the groups visible in `state` (None if there are none). Group numbers and state lists are kept."""
+    meshes = [dict(me, groups=[g for g in me['groups'] if state in g['states']]) for me in model['meshes']]
+    if not any(me['groups'] for me in meshes):
+        return None
+    return dict(model, meshes=meshes, exportState=state)
+
+
 class Landmarks:
     def __init__(self, path):
         self.blp = b = Blp(path)
@@ -260,7 +268,7 @@ class Landmarks:
     def export(self, model, outdir, tag=''):
         P, UV, N = None, None, None
         vbi = None
-        groups = [(me['bone'], g) for me in model['meshes'] for g in me['groups']]
+        groups = [(me['bone'] or 'mesh%d' % me['mesh'], g) for me in model['meshes'] for g in me['groups']]
         if not groups:
             raise AssertionError('no meshes (skeleton-only assembly node, %d bones)' % len(model['bones']))
         used_vb = sorted({g['vb'] for _, g in groups})

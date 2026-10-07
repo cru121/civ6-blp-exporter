@@ -22,10 +22,12 @@ python civ6_blp_export.py Base Babylon -o out      # several packages ("Base" = 
 python civ6_blp_export.py "C:\...\landmarks\city_buildings.blp"     # one file (or a folder of .blp)
 python civ6_blp_export.py Babylon --list           # just list what's inside
 ```
-Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
+Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--validate`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
+
+Models contain the geometry of every tile state together (Construction, Worked, Pillaged... overlap, as in the game files). `--states Worked` instead writes one clean `<name>__Worked.obj/.gltf` per model holding only the groups visible in that state (and sets the assembly states too); state info stays in the object names and glTF `extras.states`. `--validate` checks the finished export (see below).
 
 Output: `<out>/<package>__<blp>/{models,assemblies,textures}/` — `.obj` + `.mtl` (+ `.json` with the mesh/bone/state/material data), shared decoded `textures/*.png`, and `summary.md` / `summary.json`.
-Object names inside an OBJ look like `Palgum_bld__g5_Unworked+Worked_mat0`: bone/mesh name, group, the tile states in which that group is visible, material.
+Object names inside an OBJ look like `Palgum_bld__g5_Unworked+Worked_mat0`: bone/mesh name (`meshN` when the mesh has no bone name), group, the tile states in which that group is visible, material. Each object is preceded by the matching `usemtl`, and the OBJ declares its `.mtl` with `mtllib`, so Blender imports the materials.
 Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs in Blender (OBJ is Z-up) or any glTF viewer, MeshLab, etc. `python obj_raster.py model.obj out.png` makes a quick textured preview.
 
 ## Files
@@ -39,6 +41,11 @@ Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs 
 | `blp_gltf.py` | glTF with skeleton, skinning and animations |
 | `blp_anim.py` | loose `ANIMATION_*` file decoder |
 | `obj_raster.py` | quick textured preview renderer |
+| `blp_validate.py` | export consistency check (`--validate`, or `python blp_validate.py <folder>`) |
+| `tests/` | regression tests: `python -m unittest discover tests` (game-backed tests are skipped without a Civ6 install) |
+
+### Validation
+`--validate` reports (and exits 1 on) missing textures and MTL references, `usemtl` names without a `newmtl`, faces without a material, out-of-range or non-triangle faces, v/vt/vn count mismatches, material IDs outside the material table, index counts that aren't multiples of 3, OBJ triangle counts that disagree with the model JSON, and broken glTF references (images, buffers, accessors, indices).
 
 ## Limits
 **Models**
