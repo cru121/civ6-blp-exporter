@@ -138,15 +138,22 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
             # without --states: one export with every state's geometry; with it: one export per state, containing only that state's groups
             variants = [(md, tag)] if not model_states else [(model_for_state(md, st), '%s__%s' % (tag, st)) for st in model_states]
             n = 0
+            files = []
             for variant, vtag in variants:
                 if variant is None:
                     continue
+                files.append(md['name'] + vtag)
                 L.export(variant, mdir, vtag)
                 blp_gltf.export_gltf(L, variant, mdir, vtag, matched)       # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
                 n += 1
                 rec['gltf'] = rec.get('gltf', 0) + 1
             if n:
                 rec['exported'] += 1
+                groups = [g for me in md['meshes'] for g in me['groups']]
+                tex = sorted({t for g in groups for k in ('diffuse', 'lean0', 'roughness', 'metalness', 'ao', 'opacity', 'emission')
+                              for t in [md['materials'][g['materialID']].get(k)] if t}) if md['materials'] else []
+                rec.setdefault('modelInfo', []).append(dict(name=md['name'], cls=md['className'], files=files, bones=len([b for b in md['bones'] if b]),
+                                                            tris=sum(g['indexCount'] for g in groups) // 3, textures=tex, skinned=len(md['bones']) > 1))
             rec['animations'] = rec.get('animations', 0) + len(matched)
         except Exception as e:
             rec['errors'].append('%s: %s' % (md['name'], e))
@@ -181,6 +188,7 @@ def main(argv=None):
     ap.add_argument('-o', '--out', default='civ6_export', help='output folder (default ./civ6_export)')
     ap.add_argument('--game', help="Civ6 install folder (auto-detected from Steam/Epic if omitted; or set CIV6_DIR)")
     ap.add_argument('--states', help='states to export (Construction,Pillaged,Unbuilt,Unworked,Worked): one OBJ/glTF per state (<name>__<State>) holding only the groups visible in that state, and the states of assemblies. Default: models contain every state together; assemblies Worked,Pillaged')
+    ap.add_argument('--report', action='store_true', help='write <out>/dependency_report: model catalog (sizes, textures, referencing artdef entries) and how each unit is composed from parts (reads the game ArtDefs)')
     ap.add_argument('--validate', action='store_true', help='after exporting, check the output for missing textures/materials and other inconsistencies (exit code 1 if any error)')
     ap.add_argument('--platform', default='Windows', help='Platforms/<name> to read when given Base/DLC names (default Windows)')
     ap.add_argument('--list', action='store_true', help='only list the models inside, export nothing')
@@ -236,6 +244,10 @@ def main(argv=None):
             f.write('## Unreadable BLPs\n')
             for r in failed: f.write('- %s/%s: %s\n' % (r['package'], r['blp'], r['error']))
     print('\nDone in %.0fs: %d BLP(s) with models, %d unreadable/skipped. Output: %s' % (time.time() - t0, len(with_models), len(failed), os.path.abspath(a.out)))
+    if a.report:
+        import blp_artdefs
+        rdir, nunits, nmodels = blp_artdefs.report_dependencies(game, results, a.out)
+        print('Dependency report: %d units, %d models -> %s' % (nunits, nmodels, rdir))
     if a.validate:
         import blp_validate
         return 1 if blp_validate.report(a.out) else 0

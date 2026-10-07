@@ -22,7 +22,7 @@ python civ6_blp_export.py Base Babylon -o out      # several packages ("Base" = 
 python civ6_blp_export.py "C:\...\landmarks\city_buildings.blp"     # one file (or a folder of .blp)
 python civ6_blp_export.py Babylon --list           # just list what's inside
 ```
-Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--validate`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
+Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--validate`, `--report`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
 
 Models contain the geometry of every tile state together (Construction, Worked, Pillaged... overlap, as in the game files). `--states Worked` instead writes one clean `<name>__Worked.obj/.gltf` per model holding only the groups visible in that state (and sets the assembly states too); state info stays in the object names and glTF `extras.states`. `--validate` checks the finished export (see below).
 
@@ -41,8 +41,18 @@ Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs 
 | `blp_gltf.py` | glTF with skeleton, skinning and animations |
 | `blp_anim.py` | loose `ANIMATION_*` file decoder |
 | `obj_raster.py` | quick textured preview renderer |
+| `blp_artdefs.py` | artdef reader and the dependency / catalog report (`--report`) |
 | `blp_validate.py` | export consistency check (`--validate`, or `python blp_validate.py <folder>`) |
 | `tests/` | regression tests: `python -m unittest discover tests` (game-backed tests are skipped without a Civ6 install) |
+
+### Dependency report (`--report`)
+A BLP only holds assets; which assets make up a unit or building is defined in the game's `ArtDefs/*.artdef` XML files. Units are built from parts: Anansi, for example, is an `Armor` + `Body` + `Head` attachment on the same skeleton (`Anansi_ArmorA`, `Anansi_Body`, and a shared head, `Male_African_Head_01`, that lives in another BLP). `--report` reads the artdefs (Base plus every DLC, merged the way the game does) and writes `<out>/dependency_report/`:
+
+- `units/<UNIT>.md` and `units.json`: for every unit with a part in the export, its parts per attachment (point on the skeleton, tint, bin, asset entry, BLP) and whether each part is exported, in a BLP the exporter cannot read, or in a BLP you did not export. Run it on every package a unit draws from (e.g. `Base Babylon`) to find the shared parts.
+- `catalog.md` and `catalog.json`: every exported model with class, triangle and bone counts, textures, output files, and the artdef entries that reference it (unit parts, buildings, districts, ...).
+- `index.md`: overview, with each unit's missing parts.
+
+Not covered: which animations belong to which unit, and timelines/behaviours. The reports only describe the dependencies; assembling a complete unit (combining parts on the shared skeleton) is left to you.
 
 ### Validation
 `--validate` reports (and exits 1 on) missing textures and MTL references, `usemtl` names without a `newmtl`, faces without a material, out-of-range or non-triangle faces, v/vt/vn count mismatches, material IDs outside the material table, index counts that aren't multiples of 3, OBJ triangle counts that disagree with the model JSON, and broken glTF references (images, buffers, accessors, indices).
@@ -53,6 +63,7 @@ Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs 
 - Every model is also written as `.gltf` (+`.bin`, Y-up) with its materials; skinned models additionally get the skeleton, skin and animations. The OBJ is the bind pose without skin. Tile-state variants (Worked, Pillaged, ...) are separate primitives with the states in `extras.states`, so a viewer shows them all overlapped.
 - Unit models are called `Root`/`skin_root` in the files, so they are named after their vertex buffer (e.g. `Anansi_Body`).
 - Bytes 20-23 of the skinned vertex (probably tangent) and the second UV set of static vertices are not decoded.
+- The Base game's `units/units.blp` (the shared heads, hands, horses...) is read as 0 models: the container location heuristic fails on it. The dependency report flags such parts as "in a BLP the exporter could not read".
 
 **Materials**
 - Materials are converted to glTF metallic-roughness (and the PBR extension of MTL). The game's slots map as follows:

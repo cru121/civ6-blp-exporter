@@ -138,3 +138,85 @@ class ExportedBabylon(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --------------------------------------------------------------------------- artdefs / dependency report
+import blp_artdefs
+
+
+def _el(name, fields='', children=''):
+    return '<Element><m_Fields><m_Values>%s</m_Values></m_Fields><m_ChildCollections>%s</m_ChildCollections><m_Name text="%s"/></Element>' % (fields, children, name)
+
+
+def _coll(name, *els):
+    return '<Element><m_CollectionName text="%s"/>%s</Element>' % (name, ''.join(els))
+
+
+def _str(param, v):
+    return '<Element class="AssetObjects..StringValue"><m_Value text="%s"/><m_ParamName text="%s"/></Element>' % (v, param)
+
+
+def _blp(entry, pkg):
+    return '<Element class="AssetObjects..BLPEntryValue"><m_EntryName text="%s"/><m_BLPPackage text="%s"/><m_ParamName text="Asset"/></Element>' % (entry, pkg)
+
+
+def _artdef(path, *roots):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write('<AssetObjects..ArtDefSet><m_Version>1</m_Version><m_TemplateName text="Units"/><m_RootCollections>%s</m_RootCollections></AssetObjects..ArtDefSet>' % ''.join(roots))
+
+
+class ArtdefsOnSyntheticFiles(unittest.TestCase):
+    """Base defines a unit + a head bin, a DLC extends the bin: merging, bin resolution and part statuses."""
+
+    def setUp(self):
+        self.g = tempfile.mkdtemp()
+        unit = _el('UNIT_X', _str('Culture', 'Any'), _coll('Members', _el('M1', _str('Type', 'Hero'))))
+        atts = _coll('Attachments',
+                     _el('Body', _str('Point', 'Root'), _coll('Bins', _el('Bodies/Hero'))),
+                     _el('Head', _str('Point', 'Root'), _coll('Bins', _el('Heads/Hero'))))
+        member = _el('Hero', '', _coll('Cultures', _el('Any', '', _coll('Variations', _el('A', '', atts)))))
+        _artdef(os.path.join(self.g, 'Base', 'ArtDefs', 'Units.artdef'), _coll('Units', unit), _coll('UnitMemberTypes', member))
+        bins = lambda *groups: _coll('UnitAttachmentBins', *groups)
+        grp = lambda b, g, entry: _el(b, '', _coll('Groups', _el(g, '', _coll('Cultures', _el('Any', '', _coll('Assets', _el('a', _blp(entry, 'units/units'))))))))
+        _artdef(os.path.join(self.g, 'Base', 'ArtDefs', 'Unit_Bins.artdef'), bins(grp('Bodies', 'Hero', 'Hero_Body')))
+        _artdef(os.path.join(self.g, 'DLC', 'Pack', 'ArtDefs', 'Unit_Bins.artdef'), bins(grp('Heads', 'Hero', 'Hero_Head')))
+
+    def tearDown(self):
+        shutil.rmtree(self.g, ignore_errors=True)
+
+    def test_composition_and_statuses(self):
+        u = blp_artdefs.unit_compositions(self.g)['UNIT_X']
+        at = u['members'][0]['cultures'][0]['variations'][0]['attachments']
+        self.assertEqual([(a['attachment'], a['point']) for a in at], [('Body', 'Root'), ('Head', 'Root')])
+        self.assertEqual(at[0]['bins'][0]['cultures'][0]['assets'][0]['entry'], 'Hero_Body')
+        self.assertEqual(at[1]['bins'][0]['cultures'][0]['assets'][0]['entry'], 'Hero_Head')     # the DLC's bin is merged in
+        self.assertEqual(at[1]['bins'][0]['src'], ['Pack'])
+        res = [dict(package='Pack', path=self.g + '/DLC/Pack/Platforms/Windows/BLPs/units/units.blp', models=1,
+                    modelInfo=[dict(name='Hero_Body', cls='Unit', files=['Hero_Body'], bones=3, tris=10, textures=[], skinned=True)])]
+        idx = blp_artdefs.ModelIndex(res, self.g)
+        self.assertEqual(idx.find('Hero_Body', 'units/units')[0], 'exported')
+        self.assertEqual(idx.find('Hero_Head', 'units/units')[0], 'not-in-examined-blps')
+        res.append(dict(package='Base', path=self.g + '/Base/Platforms/Windows/BLPs/units/units.blp', models=0))
+        self.assertEqual(blp_artdefs.ModelIndex(res, self.g).find('Hero_Head', 'units/units')[0], 'blp-unreadable')
+        self.assertEqual(blp_artdefs.ModelIndex([], self.g).find('Hero_Head', 'units/units')[0], 'blp-not-examined')
+
+    def test_report_files(self):
+        res = [dict(package='Pack', path=self.g + '/DLC/Pack/Platforms/Windows/BLPs/units/units.blp', models=1,
+                    modelInfo=[dict(name='Hero_Body', cls='Unit', files=['Hero_Body'], bones=3, tris=10, textures=['T'], skinned=True)])]
+        out, nunits, nmodels = blp_artdefs.report_dependencies(self.g, res, self.g)
+        self.assertEqual((nunits, nmodels), (1, 1))
+        md = open(os.path.join(out, 'units', 'UNIT_X.md'), encoding='utf-8').read()
+        self.assertIn('Hero_Head', md)
+        self.assertIn('Parts that are not in the export', md)
+        self.assertIn('UNIT_X (unit part)', open(os.path.join(out, 'catalog.md'), encoding='utf-8').read())
+
+
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class AnansiReport(unittest.TestCase):
+    def test_anansi_parts(self):
+        comps = blp_artdefs.unit_compositions(ex.find_game(None))
+        u = comps['UNIT_HERO_ANANSI']
+        parts = {a['attachment']: [x['entry'] for br in a['bins'] for c in br['cultures'] for x in c['assets']]
+                 for a in u['members'][0]['cultures'][0]['variations'][0]['attachments']}
+        self.assertEqual(parts, {'Armor': ['Anansi_ArmorA'], 'Body': ['Anansi_Body'], 'Head': ['Male_African_Head_01']})
