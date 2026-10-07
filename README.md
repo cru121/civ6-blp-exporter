@@ -63,7 +63,7 @@ Not covered: which animations belong to which unit, and timelines/behaviours. Th
 - Every model is also written as `.gltf` (+`.bin`, Y-up) with its materials; skinned models additionally get the skeleton, skin and animations. The OBJ is the bind pose without skin. Tile-state variants (Worked, Pillaged, ...) are separate primitives with the states in `extras.states`, so a viewer shows them all overlapped.
 - Unit models are called `Root`/`skin_root` in the files, so they are named after their vertex buffer (e.g. `Anansi_Body`).
 - Bytes 20-23 of the skinned vertex (probably tangent) and the second UV set of static vertices are not decoded.
-- The Base game's `units/units.blp` (the shared heads, hands, horses...) is read as 0 models: the container location heuristic fails on it. The dependency report flags such parts as "in a BLP the exporter could not read".
+- Verified readable: the whole install (775 Windows BLPs) loads without errors; 148 contain models, including Base `units/units.blp` (692 models: shared heads, bodies, horses). BLPs that yield no models are textures-only packages, or ones the container heuristic still cannot place; the dependency report flags the latter as "in a BLP the exporter could not read".
 
 **Materials**
 - Materials are converted to glTF metallic-roughness (and the PBR extension of MTL). The game's slots map as follows:

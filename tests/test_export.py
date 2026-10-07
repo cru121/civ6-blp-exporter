@@ -220,3 +220,16 @@ class AnansiReport(unittest.TestCase):
         parts = {a['attachment']: [x['entry'] for br in a['bins'] for c in br['cultures'] for x in c['assets']]
                  for a in u['members'][0]['cultures'][0]['variations'][0]['attachments']}
         self.assertEqual(parts, {'Armor': ['Anansi_ArmorA'], 'Body': ['Anansi_Body'], 'Head': ['Male_African_Head_01']})
+
+    def test_base_units_blp_is_readable(self):
+        """Regression: Base units/units.blp (> 32k allocations, type-name indices > 10000) was read as 0 models."""
+        from blp_models import Landmarks
+        g = ex.find_game(None)
+        base = os.path.join(g, 'Base', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        babylon = os.path.join(g, 'DLC', 'Babylon', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        if not (os.path.exists(base) and os.path.exists(babylon)):
+            self.skipTest('units BLPs not found')
+        names = {m['name'] for m in Landmarks(base).models}
+        self.assertGreater(len(names), 500)
+        self.assertIn('Male_African_Head_01', names)
+        self.assertEqual(len([m for m in Landmarks(babylon).models if m['name']]), 36)       # the shifted-by-one table must not be picked

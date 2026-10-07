@@ -72,7 +72,7 @@ def _plausible(d, q, need_size=True):
         return False
     off, sz, cnt = struct.unpack_from('<III', d, q + 8)
     ud, tn = struct.unpack_from('<QQ', d, q + 24)
-    return d[q + 20:q + 24] == b'\0\0\0\0' and tn < 10000 and off < 5_000_000 and sz < 5_000_000 and ud < (1 << 40) and (sz > 0 or not need_size)
+    return d[q + 20:q + 24] == b'\0\0\0\0' and tn < (1 << 22) and off < 0x10000000 and sz < 0x10000000 and ud < (1 << 40) and (sz > 0 or not need_size)
 
 
 def _candidates(d, start, end):
@@ -82,10 +82,15 @@ def _candidates(d, start, end):
     a = np.frombuffer(d, np.uint8, count=cnt, offset=start)
     n = max(cnt - 40, 0)
     m = (a[0:n] <= 1) & (a[1:n + 1] <= 8)
-    for k in (2, 3, 4, 5, 20, 21, 22, 23, 29, 30, 31, 34, 35, 36, 37, 38, 39):
+    for k in (2, 3, 4, 5, 20, 21, 22, 23, 29, 30, 31, 35, 36, 37, 38, 39):
         m &= a[k:k + n] == 0
-    m &= a[33:33 + n] < 40
+    m &= a[34:34 + n] < 0x40            # type-name index tn < 1<<22 (Base units.blp has > 32k allocations)
     return np.nonzero(m)[0] + start
+
+
+def _tn_in_range(d, q, n):
+    """every record's type-name allocation index must point inside the table"""
+    return all(struct.unpack_from('<Q', d, q + 40 * i + 32)[0] <= n for i in range(n))
 
 
 def find_tables(d, min_n=20, start=1024):
@@ -104,7 +109,7 @@ def find_tables(d, min_n=20, start=1024):
         while p + 40 <= end and _plausible(d, p, False) and d[p + 24:p + 40] == bytes(16):
             n += 1      # trailing sentinel / empty records
             p += 40
-        if n >= min_n:
+        if n >= min_n and _tn_in_range(d, q, n):      # a chain shifted by a byte or two also looks plausible; its type-name indices are garbage
             runs.append((q, n))
             skip_to = p
     return runs

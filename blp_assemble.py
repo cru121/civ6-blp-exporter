@@ -83,6 +83,8 @@ def assemble(L, asm, outdir, state='Worked'):
             faces.append(('%s__%s_g%d' % (bname, part['name'], g['group']), '%smat%d' % (parts_done[pi], g['materialID']), I.reshape(-1, 3) + 1))
         report['placed'].append(dict(bone=bname, part=part['name'], pos=[round(x, 3) for x in asm['boneXforms'][i]['pos']], flags=asm['boneXforms'][i]['flags']))
     fn = os.path.join(outdir, asm['name'] + '_assembled_' + state + '.obj')
+    if not verts:                                # a skeleton-only node whose parts live elsewhere (e.g. a unit's 'Root'): nothing to draw
+        return None, report
     V, UV, N = np.concatenate(verts), np.concatenate(uvs), np.concatenate(norms)
     with open(fn, 'w') as f:
         f.write('# %s assembled (state %s), Z-up; %d placed parts\n' % (asm['name'], state, len(report['placed'])))
