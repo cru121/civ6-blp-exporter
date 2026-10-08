@@ -113,6 +113,8 @@ Not covered: which animations belong to which unit, and timelines/behaviours. Th
 ## Legal
 The exported output is Firaxis game content. Fine for personal modding reference; don't redistribute it. The `.gitignore` excludes exports for that reason; the preview image above is the only rendered game content in this repo.
 
+One deliberate exception: `trigger_names.json` (effect and sound names, keyed by hash) and `blp_dsgs.py` (the animation and timeline slot names of the game's state graphs) are lists of identifiers read from the game's own files, included so the exporter can print readable names. They contain no models, textures or other asset data. If a rights holder objects, they can be removed; `tools/build_trigger_names.py` rebuilds the first one from the SDK assets.
+
 ## Credits
 Format knowledge: the [Civ6 Fandom wiki BLP page](https://civ6.fandom.com/wiki/BLP) plus reverse engineering (the wiki describes an older layout; current files differ in the header).
 
