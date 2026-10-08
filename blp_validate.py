@@ -153,6 +153,18 @@ def check_gltf(path, out):
                 idx = np.frombuffer(buf, comp[ia['componentType']][0], ia['count'], bv['byteOffset'] + ia.get('byteOffset', 0))
                 if len(idx) and idx.max() >= nv:
                     _issue(out, 'error', path, 'primitive index %d >= %d vertices' % (idx.max(), nv))
+    for nd in j.get('nodes', []):                                       # skinned primitives: every joint index must point into the skin's joint list
+        if 'skin' in nd and 'mesh' in nd and buf is not None:
+            nj = len(j['skins'][nd['skin']]['joints'])
+            for p in j['meshes'][nd['mesh']]['primitives']:
+                ja = p['attributes'].get('JOINTS_0')
+                if ja is None:
+                    continue
+                a = acc[ja]
+                bv = j['bufferViews'][a['bufferView']]
+                J = np.frombuffer(buf, comp[a['componentType']][0], a['count'] * 4, bv['byteOffset'] + a.get('byteOffset', 0))
+                if len(J) and J.max() >= nj:
+                    _issue(out, 'error', path, 'mesh %s: joint index %d but the skin has %d joints' % (nd.get('name'), J.max(), nj))
 
 
 def validate_tree(root):

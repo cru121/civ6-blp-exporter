@@ -96,27 +96,34 @@ def export_gltf(L, model, outdir, tag='', animations=None):
             materials.append(m); mat_index[k] = len(materials) - 1
         return mat_index[k]
 
-    def vertex_accessors(vb, skinned, Lg=L):
-        vb = (id(Lg), vb) if Lg is not L else vb
-        if vb not in acc_cache:
-            P, UV, N = Lg.vertices(vb[1] if isinstance(vb, tuple) else vb)
+    def vertex_accessors(vb, skinned, Lg, lo, hi):
+        """Accessors for vertices lo..hi of a vertex buffer. Meshes can share one buffer with different bone lists (the vertices of the others carry
+        joint indices outside this mesh's list), so every primitive gets only its own range."""
+        key = (id(Lg) if Lg is not L else 0, vb, lo, hi)
+        if key not in acc_cache:
+            P, UV, N = (x[lo:hi] for x in Lg.vertices(vb))
             a = dict(POSITION=B.add(P.astype('<f4'), 34962, componentType=5126, count=len(P), type='VEC3', min=[float(x) for x in P.min(0)], max=[float(x) for x in P.max(0)]),
                      NORMAL=B.add(N.astype('<f4'), 34962, componentType=5126, count=len(N), type='VEC3'),
                      TEXCOORD_0=B.add(UV.astype('<f4'), 34962, componentType=5126, count=len(UV), type='VEC2'))
-            sk = Lg.skin(vb[1] if isinstance(vb, tuple) else vb)
+            sk = Lg.skin(vb)
             if sk is not None:
                 J, W = sk
-                a['JOINTS_0'] = B.add(J.astype('u1'), 34962, componentType=5121, count=len(J), type='VEC4')
-                a['WEIGHTS_0'] = B.add(W.astype('<f4'), 34962, componentType=5126, count=len(W), type='VEC4')
-            acc_cache[vb] = a
-        return acc_cache[vb]
+                a['JOINTS_0'] = B.add(J[lo:hi].astype('u1'), 34962, componentType=5121, count=hi - lo, type='VEC4')
+                a['WEIGHTS_0'] = B.add(W[lo:hi].astype('<f4'), 34962, componentType=5126, count=hi - lo, type='VEC4')
+            acc_cache[key] = a
+        return acc_cache[key]
 
     mesh_prims = {}
     for mi, me, g in groups:
         Lg = g.get('_L') or L                                 # combined models take geometry from several BLPs
         skinned = Lg.vbs[g['vb']]['fmt'] != 828177625
-        acc = vertex_accessors(g['vb'], skinned, Lg)
-        I = (Lg.indices(g['ib'])[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex']).astype('<u4')
+        rel = Lg.indices(g['ib'])[g['firstIndex']:g['firstIndex'] + g['indexCount']]            # indices relative to baseVertex
+        nv, lo = Lg.vbs[g['vb']]['count'], g['baseVertex']
+        hi = lo + g['vertCount'] if g.get('vertCount') else nv
+        if hi > nv or (len(rel) and int(rel.max()) >= hi - lo):                                  # the group's own vertex count does not cover its indices: take the rest of the buffer
+            hi = nv
+        acc = vertex_accessors(g['vb'], skinned, Lg, lo, hi)
+        I = rel.astype('<u4')
         prim = dict(attributes=dict(acc), indices=B.add(I, 34963, componentType=5125, count=len(I), type='SCALAR'), mode=4,
                     material=material(g['materialID']), extras=dict(states=g['states'], group=g['group']))
         mesh_prims.setdefault(mi, []).append((prim, skinned, g['vb']))

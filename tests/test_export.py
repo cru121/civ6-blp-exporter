@@ -311,6 +311,27 @@ class StaticGltfIsYUp(unittest.TestCase):
         self.assertEqual(gl['scenes'][0]['nodes'], [0])
 
 
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class SharedVertexBuffers(unittest.TestCase):
+    def test_meshes_sharing_a_buffer_get_only_their_own_vertices(self):
+        """Maui_ArmorA: two meshes share one vertex buffer but have 2 and 12 joints; the other mesh's vertices must not leak joint indices."""
+        import tempfile, blp_gltf, blp_textures, blp_validate
+        from blp_models import Landmarks
+        g = ex.find_game(None)
+        p = os.path.join(g, 'DLC', 'Babylon', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        if not os.path.exists(p):
+            self.skipTest('Babylon units.blp not found')
+        blp_textures.set_game(g)
+        L = Landmarks(p)
+        md = next(m for m in L.models if m['name'] == 'Maui_ArmorA')
+        with tempfile.TemporaryDirectory() as d:
+            L.texture_dir = os.path.join(d, 'textures')
+            fn = blp_gltf.export_gltf(L, md, d, '')
+            out = []
+            blp_validate.check_gltf(fn, out)
+        self.assertEqual(out, [])
+
+
 class CombineUnitParts(unittest.TestCase):
     """blp_units.combine: parts that share a rig are merged by bone name; static parts hang on attachment points."""
     def test_merge(self):

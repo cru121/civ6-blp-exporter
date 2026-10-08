@@ -2,6 +2,11 @@
 
 Versions follow [semantic versioning](https://semver.org/) (0.x: the command line and output layout may still change between minor versions). `python civ6_blp_export.py --version` prints the current one.
 
+## 0.4.1 - 2026-10-08
+
+- **Fixed invalid skinned glTF:** when several meshes of a model share one vertex buffer but have different bone lists (e.g. `Maui_ArmorA`: 2 and 12 joints), every mesh exported the whole buffer, so vertices of the other meshes carried joint indices outside the mesh's joint list. Strict loaders (three.js bounding boxes) crashed on 38 of the 0.4.0 glTFs, and the glTF validator would reject them. Each primitive now gets only its own vertices.
+- The validator checks joint indices against the skin's joint list.
+
 ## 0.4.0 - 2026-10-08
 
 Closer to how modders work: the asset-level data of the BLPs (attachment points, animation slots, timelines) is decoded, and there are views by source file and by whole unit. Checked against the shipped `.ast`/`.fgx` files of the SDK Development Assets wherever they exist (Base game, Rise and Fall, Gathering Storm); later DLC has no sources to check against.

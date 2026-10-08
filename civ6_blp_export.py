@@ -13,7 +13,7 @@ reference - don't redistribute Firaxis assets.
 """
 import argparse, glob, json, os, re, sys, time, traceback
 
-__version__ = '0.4.0'      # see CHANGELOG.md
+__version__ = '0.4.1'      # see CHANGELOG.md
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
