@@ -242,6 +242,163 @@ class AnansiReport(unittest.TestCase):
         self.assertEqual(len([m for m in Landmarks(babylon).models if m['name']]), 36)       # the shifted-by-one table must not be picked
 
 
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class AttachmentPoints(unittest.TestCase):
+    def test_catapult_points_match_its_ast(self):
+        """CatapultA: 14 points, names/bones/positions as in the .ast (slots are sorted by bone; names are found by FNV-1a hash)."""
+        from blp_models import Landmarks, _fnv1a
+        p = os.path.join(ex.find_game(None), 'Base', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        if not os.path.exists(p):
+            self.skipTest('Base units.blp not found')
+        md = next(m for m in Landmarks(p).models if m['name'] == 'CatapultA')
+        pts = {a['name']: a for a in md['attachments']}
+        self.assertEqual(len(pts), 14)
+        self.assertEqual(pts['Operator']['bone'], 'CatapultOperator')
+        self.assertEqual(pts['FX_Hitloc_01']['bone'], 'Catapult_Body')
+        self.assertEqual([round(x, 2) for x in pts['FX_Hitloc_01']['matrix'][12:15]], [13.5, 4.0, 0.75])
+        self.assertEqual(pts['FX_Boulder_Loc_01']['scale'], 3.0)
+        self.assertEqual(_fnv1a('SpawnProjectile'), 0x3bba96bf)
+
+
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class AnimationBindings(unittest.TestCase):
+    def test_catapult_bindings_match_its_ast(self):
+        """CatapultA.ast has 47 animation bindings (slot -> animation); the BLP stores the same, with slot ids in place of names."""
+        from blp_models import Landmarks
+        p = os.path.join(ex.find_game(None), 'Base', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        if not os.path.exists(p):
+            self.skipTest('Base units.blp not found')
+        md = next(m for m in Landmarks(p).models if m['name'] == 'CatapultA')
+        slots = {x['slot']: x['animation'] for x in md['animationSlots']}
+        self.assertEqual(len(md['animationSlots']), 47)
+        self.assertEqual(len(md['animations']), 14)
+        self.assertEqual(slots['ATTACK_A'], 'ANIMATION_Catapult_AttackA')
+        self.assertEqual(slots['RUN_COMBAT'], 'ANIMATION_Catapult_RunFwdA')
+        self.assertEqual(slots['BREATHING_A'], 'ANIMATION_RedcoatGun_Idle')
+        self.assertEqual(slots['REACT_RANGED_C'], 'ANIMATION_Catapult_BraceC')
+
+        self.assertEqual(md['stateGraph'], ['potential_any_graph'])
+        tl = {t['slot']: t for t in md['timelines']}                       # timelines and their triggers, as in the .ast
+        self.assertEqual(len(tl['ATTACK_A']['triggers']), 6)
+        self.assertEqual([t['type'] for t in tl['RUN_A']['triggers']], ['ASSET_FX', 'SOUND'])
+        self.assertEqual(tl['RUN_A']['triggers'][0]['attachment'], 'FX_Dust_01')
+        self.assertAlmostEqual(tl['PERSISTENT']['duration'], 2.4583, places=3)
+        self.assertEqual(sum(len(t['triggers']) for t in md['timelines']), 20)
+
+
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class StaticGltfIsYUp(unittest.TestCase):
+    def test_static_meshes_hang_under_the_z_up_to_y_up_node(self):
+        """Regression (0.2.0 - 0.3.1): static meshes were scene roots beside the rotation node, so buildings lay on their side."""
+        import json, tempfile, blp_gltf, blp_textures
+        from blp_models import Landmarks
+        g = ex.find_game(None)
+        p = os.path.join(g, 'Base', 'Platforms', 'Windows', 'BLPs', 'landmarks', 'tilebases.blp')
+        if not os.path.exists(p):
+            self.skipTest('Base tilebases.blp not found')
+        blp_textures.set_game(g)
+        L = Landmarks(p)
+        md = next(m for m in L.models if m['name'] == 'IMP_Farm_AN_Bld_A')
+        with tempfile.TemporaryDirectory() as d:
+            gl = json.load(open(blp_gltf.export_gltf(L, md, d, '')))
+        parent = {c: i for i, n in enumerate(gl['nodes']) for c in n.get('children', [])}
+        meshes = [i for i, n in enumerate(gl['nodes']) if 'mesh' in n and 'skin' not in n]
+        self.assertTrue(meshes)
+        for i in meshes:
+            while i in parent:
+                i = parent[i]
+            self.assertEqual(i, 0)                                                 # root of the chain is the Z-up -> Y-up node
+        self.assertEqual(gl['scenes'][0]['nodes'], [0])
+
+
+class CombineUnitParts(unittest.TestCase):
+    """blp_units.combine: parts that share a rig are merged by bone name; static parts hang on attachment points."""
+    def test_merge(self):
+        import blp_units
+        xf = lambda parent: dict(parent=parent, flags=0, pos=[0, 0, 0], quat=[0, 0, 0, 1], scaleShear=[1, 0, 0, 0, 1, 0, 0, 0, 1], invWorld=list(range(16)))
+        class FakeL:                                                                  # just what combine needs: vertex-buffer formats
+            vbs = [dict(fmt=1719251312), dict(fmt=828177625)]
+        g = lambda vb, mat: dict(group=0, states=['Construction'], materialID=mat, vb=vb, ib=0, firstIndex=0, indexCount=3, baseVertex=0, vertCount=3)
+        body = dict(name='Body', bones=['Root', 'Spine'], boneXforms=[xf(-1), xf(0)], skeletons=[dict(name='Root', bones=['Root', 'Spine'], xforms=[xf(-1), xf(0)])],
+                    meshes=[dict(mesh=0, bone=None, groups=[g(0, 0)])], meshBindings=[dict(fromStart=0, fromCount=2, fromSkeleton=0)], boneIds=[0, 1],
+                    materials=[dict(index=0, diffuse='A')], attachments=[dict(name='Hat', bone='Spine', boneIndex=1, matrix=list(range(16)), scale=1.0)], animations=[])
+        armor = dict(name='Armor', bones=['Root', 'Spine', 'Cape'], boneXforms=[xf(-1), xf(0), xf(1)], skeletons=[dict(name='Root', bones=['Root', 'Spine', 'Cape'], xforms=[xf(-1), xf(0), xf(1)])],
+                     meshes=[dict(mesh=0, bone=None, groups=[g(0, 0)])], meshBindings=[dict(fromStart=0, fromCount=2, fromSkeleton=0)], boneIds=[2, 0],
+                     materials=[dict(index=0, diffuse='B')], attachments=[], animations=[])
+        helm = dict(name='Helm', bones=['Helm'], boneXforms=[xf(-1)], skeletons=[dict(name='Helm', bones=['Helm'], xforms=[xf(-1)])],
+                    meshes=[dict(mesh=0, bone='Helm', groups=[g(1, 0)])], meshBindings=[dict(fromStart=0, fromCount=1, fromSkeleton=0)], boneIds=[0],
+                    materials=[dict(index=0, diffuse='C')], attachments=[], animations=[])
+        parts = [dict(entry='Body', point='Root', model=body, L=FakeL()), dict(entry='Armor', point='Root', model=armor, L=FakeL()),
+                 dict(entry='Helm', point='Hat', model=helm, L=FakeL())]
+        m = blp_units.combine(parts, 0, 'X')
+        self.assertEqual(m['bones'], ['Root', 'Spine', 'Cape'])                      # the cape was added to the shared skeleton
+        self.assertEqual(m['skeletons'][0]['xforms'][2]['parent'], 1)
+        self.assertEqual([x['materialID'] for me in m['meshes'] for x in me['groups']], [0, 1, 2])
+        self.assertEqual(m['boneIds'], [0, 1, 2, 0])                                  # armor's local ids remapped to the shared skeleton
+        self.assertEqual(m['meshParent'], {2: 'Hat'})                                  # the static helmet hangs on the body's Hat point
+        self.assertEqual(m['_warnings'], [])
+
+
+class Bundle(unittest.TestCase):
+    def test_euler_matches_the_ast_convention(self):
+        """Checked against shipped .ast files: TankA Gun (0,-90deg,0) and SiegeTower dust points (0,180deg,0) scale 0.4."""
+        import math, blp_bundle
+        e, sc = blp_bundle.euler_zyx([0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 2, 1])
+        self.assertEqual([round(x, 6) for x in e], [0.0, round(-math.pi / 2, 6), 0.0]); self.assertAlmostEqual(sc, 1.0)
+        e, sc = blp_bundle.euler_zyx([-0.4, 0, 0, 0, 0, 0.4, 0, 0, 0, 0, -0.4, 0, 6.6, 8.25, 0, 1])
+        self.assertAlmostEqual(abs(e[1]), math.pi, places=5); self.assertAlmostEqual(sc, 0.4)
+
+    def test_trigger_names_resolve(self):
+        from blp_models import trigger_name, _fnv1a
+        self.assertEqual(trigger_name('%08x' % _fnv1a('FX_Dust_BatteringRam_01')), 'FX_Dust_BatteringRam_01')
+
+    @unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+    def test_catapult_bundle(self):
+        import json, tempfile, xml.etree.ElementTree as ET, blp_bundle
+        from blp_models import Landmarks
+        p = os.path.join(ex.find_game(None), 'Base', 'Platforms', 'Windows', 'BLPs', 'units', 'units.blp')
+        if not os.path.exists(p):
+            self.skipTest('Base units.blp not found')
+        md = next(m for m in Landmarks(p).models if m['name'] == 'CatapultA')
+        with tempfile.TemporaryDirectory() as d:
+            blp_bundle.write_bundle(md, d, dict(package='Base', blp='units.blp'))
+            j = json.load(open(os.path.join(d, 'CatapultA.asset.json')))
+            root = ET.parse(os.path.join(d, 'CatapultA.approx.ast')).getroot()               # well-formed XML
+        self.assertEqual(len(j['attachmentPoints']), 14)
+        self.assertEqual(len(j['animationBindings']), 47)
+        self.assertEqual(root.find('m_BehaviorData/m_dsgName').get('text'), 'potential_any_graph')
+        self.assertEqual(len(root.findall('m_BehaviorData/m_behaviorDataSets/m_attachmentPoints/m_Points/Element')), 14)
+        fx = [t.find('m_FXName').get('text') for t in root.iter('Element') if t.find('m_FXName') is not None]
+        self.assertIn('FX_Dust_BatteringRam_01', fx)
+        self.assertIn('Catapult_Move_Loop', fx)
+
+
+class RawVariants(unittest.TestCase):
+    def test_state_copies_collapse_and_pillaged_meshes_split_off(self):
+        from blp_models import raw_variants
+        g = lambda sts, mat, vb: dict(group=0, states=sts, materialID=mat, vb=vb, ib=vb, firstIndex=0, indexCount=3, baseVertex=0, vertCount=3)
+        md = dict(name='X', meshes=[
+            dict(mesh=0, bone='a', groups=[g(['Unworked'], 1, 5), g(['Worked'], 2, 5), g(['Construction', 'Unbuilt'], 3, 5)]),
+            dict(mesh=1, bone='b', groups=[g(['Pillaged'], 4, 6)]),
+            dict(mesh=2, bone='c', groups=[g(['Pillaged', 'Unworked'], 5, 7)])])
+        v = dict(raw_variants(md))
+        self.assertEqual(set(v), {'', '_PIL'})
+        self.assertEqual([(me['bone'], [(x['materialID'], x['states']) for x in me['groups']]) for me in v['']['meshes']], [('a', [(2, ['Default'])])])
+        self.assertEqual([me['bone'] for me in v['_PIL']['meshes']], ['b', 'c'])
+
+
+@unittest.skipUnless(ex.find_game(None), 'Civ6 install not found')
+class RawIceRink(unittest.TestCase):
+    def test_ice_rink_splits_like_its_fgx_files(self):
+        """IMP_Hockey_IceRink_MOD_PSC: 26 meshes in the .fgx, 24 in the _PIL .fgx (counts from the SDK samples' .geo files)."""
+        from blp_models import Landmarks, raw_variants
+        p = os.path.join(ex.find_game(None), 'DLC', 'Expansion2', 'Platforms', 'Windows', 'BLPs', 'landmarks', 'tilebases.blp')
+        if not os.path.exists(p):
+            self.skipTest('Expansion2 tilebases.blp not found')
+        md = next(m for m in Landmarks(p).models if m['name'] == 'IMP_Hockey_IceRink_MOD_PSC')
+        self.assertEqual({suf: len(v['meshes']) for suf, v in raw_variants(md)}, {'': 26, '_PIL': 24})
+
+
 class FileNames(unittest.TestCase):
     def test_safe_name(self):
         from blp_models import safe_name

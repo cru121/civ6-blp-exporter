@@ -20,7 +20,8 @@ _resolve_float_curves: knots 0..duration, unit-norm quaternions, depth-first wit
 the rest keep curves flagged 'unresolved'. Not supported: curve formats 0,3,6,7,12-16 (rare in the Babylon files).
 """
 import struct
-import numpy as np
+import numpy as np
+np.seterr(divide='ignore', invalid='ignore')        # some curves have a zero knot scale; those tracks are dropped later
 
 SCALE_TABLE = [1.4142135, 0.70710677, 0.35355338, 0.35355338, 0.35355338, 0.17677669, 0.17677669, 0.17677669,
                -1.4142135, -0.70710677, -0.35355338, -0.35355338, -0.35355338, -0.17677669, -0.17677669, -0.17677669]

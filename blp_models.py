@@ -22,8 +22,59 @@ def safe_name(name):
     return re.sub(r'[<>:"/|?*\x00-\x1f]', '_', name).strip(' .') or '_'
 
 
+def _fnv1a(s):
+    """32-bit FNV-1a of the exact name: how the package refers to attachment points (and trigger targets)."""
+    h = 2166136261
+    for c in s.encode('latin1'):
+        h = ((h ^ c) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+_TRIGGER_NAMES = None
+
+
+def trigger_name(h):
+    """Name for a trigger's name hash (hex string) from trigger_names.json (see tools/build_trigger_names.py), else None."""
+    global _TRIGGER_NAMES
+    if _TRIGGER_NAMES is None:
+        try:
+            _TRIGGER_NAMES = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trigger_names.json')))
+        except (OSError, ValueError):
+            _TRIGGER_NAMES = {}
+    return _TRIGGER_NAMES.get(h)
+
+
 def states(mask):
     return [n for i, n in enumerate(STATE_BITS) if mask >> i & 1]
+
+
+RAW_PREFERENCE = ['Worked', 'Construction', 'Unbuilt', 'Unworked', 'Pillaged']       # which state's material stands in for the .fgx default
+
+
+def raw_variants(model):
+    """The model as its source .fgx files: [(suffix, model)].  Each distinct piece of geometry once (the state copies of a mesh share
+    their buffers and differ only in material), with the material of the most 'normal' state.  Meshes visible only when Pillaged come from
+    the separate <name>_PIL .fgx and go into a second model with suffix '_PIL'.  Mesh names (the bone names) are the .fgx mesh names."""
+    def pick(me):
+        seen = {}
+        for g in me['groups']:
+            key = (g['vb'], g['ib'], g['firstIndex'], g['indexCount'], g['baseVertex'])
+            rank = min([RAW_PREFERENCE.index(st) for st in g['states'] if st in RAW_PREFERENCE] or [len(RAW_PREFERENCE)])
+            if key not in seen or rank < seen[key][0]:
+                seen[key] = (rank, g)
+        return [dict(g, states=['Default']) for _, g in seen.values()]
+    sets = source_sets(model)
+    return [(suf, dict(model, meshes=[dict(me, groups=pick(me)) for me in ms], exportState='raw')) for suf, ms in sets.items() if any(me['groups'] for me in ms)]
+
+
+def source_sets(model):
+    """{suffix: [original meshes]}: the meshes of the main .fgx ('') and, if any, of the <name>_PIL .fgx (meshes visible only when Pillaged)."""
+    normal = {'Worked', 'Construction', 'Unbuilt'}
+    sets = {'': [], '_PIL': []}
+    for me in model['meshes']:
+        sts = {st for g in me['groups'] for st in g['states']}
+        sets['_PIL' if 'Pillaged' in sts and not sts & normal else ''].append(me)
+    return sets
 
 
 def model_for_state(model, state):
@@ -61,7 +112,10 @@ class Landmarks:
                     self.textures.append(dict(name=m.bstr(o + 8), cls=m.bstr(o + 64), fmt=fmt, w=w, h=h, mips=d[o + 98]))
                 except IndexError:        # entry layout differs in some sprite/UI packages: keep list index-aligned
                     self.textures.append(dict(name=None, cls=None, fmt=fmt, w=w, h=h, mips=0))
-        self.models = [self._model(m.base[0] + a['off']) for a in b.allocs('ModelPackageEntry::BaseModelData_Entry')]
+        ents = b.allocs('ModelPackageEntry::BaseModelData_Entry')
+        self.models = [self._model(m.base[0] + a['off']) for a in ents]
+        self._attach_points(ents)
+        self._animations(ents)
         for md in self.models:        # unit models are called 'Root'/'skin_root' in the file: use the vertex-buffer name instead
             if md['name'] in (None, 'Root', 'skin_root') and md['meshes']:
                 vb = md['meshes'][0]['groups'][0]['vb'] if md['meshes'][0]['groups'] else None
@@ -131,6 +185,97 @@ class Landmarks:
             materials.append(mat)
         return dict(name=name, className=m.bstr(e + 8), bones=bones, meshes=meshes, materials=materials, boneXforms=xforms, boneIds=bone_ids, meshBindings=bindings, skeletons=skeletons)
 
+    def _attach_points(self, ents):
+        """Attachment points (the .ast m_attachmentPoints) -> model['attachments'] = [dict(name, bone, boneIndex, matrix[16], scale)].
+
+        Each ModelPackageEntry points to an AttachmentPointList (names in .ast order); the BaseModelData_Entry holds, per slot
+        (sorted by bone index, then name): the bone index (+248), a 4x4 row-vector matrix (+272) and (FNV-1a32(name), slot) pairs (+320)."""
+        m, d = self.m, self.d
+        by_addr = {m.base[0] + a['off']: i for i, a in enumerate(ents)}
+        for md in self.models:
+            md['attachments'] = []
+        for pe in self.blp.allocs('ModelPackageEntry'):
+            try:
+                ud, n = m.vec(m.base[pe['stripe']] + pe['off'] + 32)
+                lst = ent = None
+                for k in range(n):
+                    p = m.u64(ud + 8 * k); al = m.al[p - 1]
+                    if al['tname'] == 'AttachmentPointList':
+                        lst = m.addr(p)
+                    elif al['tname'] == 'ModelPackageEntry::BaseModelData_Entry':
+                        ent = m.addr(p)
+                if lst is None or ent not in by_addr:
+                    continue
+                md = self.models[by_addr[ent]]
+                na, nn = m.vec(lst + 8)
+                if not nn:
+                    continue
+                names = [m.bstr(m.addr(m.u64(na + j * 32))) for j in range(nn)]
+                ba, bn = m.vec(ent + 248); xa, xn = m.vec(ent + 272); pa, pn = m.vec(ent + 320)
+                if bn != xn:                                   # points with identical bone and matrix share a slot, so there can be fewer slots than names
+                    continue
+                slot_of = {h: s for h, s in (struct.unpack_from('<II', d, pa + j * 8) for j in range(pn))}
+                for name in names:
+                    s = slot_of.get(_fnv1a(name))
+                    if s is None or s >= bn:
+                        continue
+                    bi, = struct.unpack_from('<i', d, ba + 4 * s)
+                    mat = list(struct.unpack_from('<16f', d, xa + 64 * s))
+                    md['attachments'].append(dict(name=name, bone=md['bones'][bi] if 0 <= bi < len(md['bones']) else None, boneIndex=bi,
+                                                  matrix=mat, scale=mat[0]))
+            except (struct.error, IndexError, KeyError, TypeError):
+                continue        # unusual package layout: no attachment points for this model
+
+    def _animations(self, ents):
+        """model['animations'] = animation names the model uses (the .ast animation bindings); model['animationSlots'] = [dict(slotId, slot, animation)];
+        model['timelines'] = [dict(slot, triggers=[dict(type, start, duration, attachment, nameHash)])] (the .ast timelines); model['stateGraph'] = candidate graphs.
+
+        The package has a table of all animations (BLP::AnimationEntry); a model lists indices into it (+224, 8 B each: u32 0, u32 index) and its
+        slot bindings (+368, 4 B each: u16 slot id, u16 index into its own list), in .ast order.  Slot ids are positions in the slot lists of the
+        model's state graph (DSG, see blp_dsgs); the graph name is not stored, but the timeline array (+200, 24 B each: first trigger, trigger count,
+        duration) has one entry per timeline slot, so its length picks the graph.  Triggers (+176, 28 B each): type 1 FX / 2 sound / 3 transfer /
+        4 action, start, duration, attachment-point slot, FNV-1a hash of the attachment name and of the FX/sound name (names are not stored)."""
+        from blp_dsgs import DSGS
+        m, d = self.m, self.d
+        names = []
+        for a in self.blp.allocs('BLP::AnimationEntry'):
+            for i in range(a['cnt']):
+                try:
+                    names.append(m.bstr(m.base[a['stripe']] + a['off'] + i * 64 + 8))
+                except (IndexError, struct.error):
+                    names.append(None)
+        for md, a in zip(self.models, ents):
+            md['animations'], md['animationSlots'], md['timelines'], md['stateGraph'] = [], [], [], []
+            try:
+                e = m.base[a['stripe']] + a['off']
+                ad, n = m.vec(e + 224); sa, sn = m.vec(e + 368); ta, tn = m.vec(e + 200); ga, gn = m.vec(e + 176)
+                mine = [names[struct.unpack_from('<I', d, ad + 8 * j + 4)[0]] for j in range(n)] if ad else []
+                binds = [struct.unpack_from('<HH', d, sa + 4 * j) for j in range(sn)] if sa else []
+                cands = [k for k, (al, tl) in DSGS.items() if len(tl) == tn and all(sid < len(al) for sid, _ in binds)] if tn else []
+                cands = [k for k in cands if DSGS[k][0]] or cands          # the effect-only graphs (no animation slots) are the last resort
+                md['stateGraph'] = cands
+
+                def pick(lists, i):          # the slot name if every candidate graph agrees
+                    got = {l[i] for l in lists if i < len(l)}
+                    return got.pop() if len(got) == 1 else None
+                aslots = [DSGS[k][0] for k in cands]; tslots = [DSGS[k][1] for k in cands]
+                for sid, ai in binds:
+                    md['animationSlots'].append(dict(slotId=sid, slot=pick(aslots, sid), animation=mine[ai] if ai < len(mine) else None))
+                md['animations'] = sorted({x for x in mine if x})
+                attach = {_fnv1a(x['name']): x['name'] for x in md.get('attachments', [])}
+                kinds = {1: 'ASSET_FX', 2: 'SOUND', 3: 'TRANSFER', 4: 'ACTION'}
+                for j in range(tn if ta else 0):
+                    _, _, first, cnt, dur, _ = struct.unpack_from('<IIIIfI', d, ta + 24 * j)
+                    trig = []
+                    for t in range(first, min(first + cnt, gn)):
+                        ty, start, tdur, slot, ah, nh, _ = struct.unpack_from('<IffiIII', d, ga + 28 * t)
+                        trig.append(dict(type=kinds.get(ty, ty), start=round(start, 4), duration=round(tdur, 4), attachmentSlot=slot,
+                                         attachment=attach.get(ah) or trigger_name('%08x' % ah), name=trigger_name('%08x' % nh), nameHash='%08x' % nh))
+                    if trig or j == 0 or dur:
+                        md['timelines'].append(dict(slotId=j, slot=pick(tslots, j), triggers=trig, duration=round(dur, 4) if dur else 0))
+            except (struct.error, IndexError, TypeError):
+                md['animations'], md['animationSlots'], md['timelines'], md['stateGraph'] = [], [], [], []
+
     def vertices(self, vbi):
         v, b = self.vbs[vbi], self.blp
         stride = {VB_FORMAT_24: 24, VB_FORMAT_32_SKIN: 32}.get(v['fmt'])
@@ -166,7 +311,7 @@ class Landmarks:
         if not tex or not path:
             return None
         tdir = getattr(self, 'texture_dir', None) or os.path.join(outdir, 'textures')
-        full = os.path.join(tdir, name + '.png')
+        full = os.path.join(tdir, re.sub(r'\s+', '_', name) + '.png')          # no spaces: MTL paths cannot contain them
         rel = os.path.relpath(full, outdir).replace(os.sep, '/')
         if not os.path.exists(full):
             os.makedirs(tdir, exist_ok=True)
@@ -192,7 +337,7 @@ class Landmarks:
         from PIL import Image
         tdir = getattr(self, 'texture_dir', None) or os.path.join(outdir, 'textures')
         os.makedirs(tdir, exist_ok=True)
-        full = os.path.join(tdir, stem + '.png')
+        full = os.path.join(tdir, re.sub(r'\s+', '_', stem) + '.png')
         Image.fromarray(arr[:, :, 0] if arr.shape[2] == 1 else arr).save(full)
         return os.path.relpath(full, outdir).replace(os.sep, '/')
 
@@ -211,7 +356,10 @@ class Landmarks:
         cache = self.__dict__.setdefault('_pbr_cache', {})
         key = tuple(mat.get(s) for s in ('diffuse', 'opacity', 'lean0', 'roughness', 'metalness', 'ao', 'emission'))
         if key in cache:
-            return cache[key]
+            cdir, cout = cache[key]
+            if cdir == outdir:
+                return cout
+            return {k: (os.path.relpath(os.path.join(cdir, v), outdir).replace(os.sep, '/') if isinstance(v, str) else v) for k, v in cout.items()}      # paths are relative to the folder of the first call
         out = {}
 
         def resized(arr, w, h):
@@ -251,7 +399,7 @@ class Landmarks:
             if metal: out['metallic'] = self._save_png(B[:, :, None], stem + '_metallic', outdir)
             if ao: out['occlusion'] = self._save_png(R[:, :, None], stem + '_occlusion', outdir)
             out['has'] = dict(ao=ao is not None, roughness=gloss is not None, metal=metal is not None)
-        cache[key] = out
+        cache[key] = (outdir, out)
         return out
 
     def write_materials(self, model, groups, outdir, fname, prefix='', mode='w'):

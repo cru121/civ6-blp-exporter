@@ -57,6 +57,12 @@ def export_gltf(L, model, outdir, tag='', animations=None):
             p = sk['xforms'][i]['parent']
             (nodes[0] if p < 0 else nodes[base[k] + p]).setdefault('children', []).append(base[k] + i)
     bone_node = lambda i, sk=0: base[sk] + i
+    attach_node = {}
+    for att in d.get('attachments') or []:                 # attachment points: empty nodes under their bone (matrix is bone-local; same floats, glTF is column-major)
+        if 0 <= att['boneIndex'] < len(sks[0]['bones']):
+            nodes.append(dict(name='attach_' + att['name'], matrix=[float(x) for x in att['matrix']], extras=dict(attachmentPoint=att['name'])))
+            nodes[bone_node(att['boneIndex'])].setdefault('children', []).append(len(nodes) - 1)
+            attach_node[att['name']] = len(nodes) - 1
 
     meshes, skins, materials, textures, images = [], [], [], [], []
     mat_index, tex_index, acc_cache, skin_of_vb = {}, {}, {}, {}
@@ -70,7 +76,7 @@ def export_gltf(L, model, outdir, tag='', animations=None):
     def material(k):
         if k not in mat_index:
             mt = d['materials'][k] if k < len(d['materials']) else {}
-            maps = L.pbr_maps(mt, outdir)
+            maps = (mt.get('_L') or L).pbr_maps(mt, outdir)          # '_L': the BLP a material of a combined model comes from
             m = dict(name='mat%d' % k, doubleSided=True, pbrMetallicRoughness=dict(metallicFactor=0.0, roughnessFactor=1.0))
             t = texture(maps.get('baseColor'))
             if t is not None: m['pbrMetallicRoughness']['baseColorTexture'] = dict(index=t)
@@ -86,17 +92,18 @@ def export_gltf(L, model, outdir, tag='', animations=None):
                 m['pbrMetallicRoughness']['roughnessFactor'] = 1.0
             e = texture(maps.get('emissive'))
             if e is not None: m['emissiveTexture'] = dict(index=e); m['emissiveFactor'] = [1.0, 1.0, 1.0]
-            m['extras'] = {k_: v for k_, v in mt.items() if k_ != 'index'}
+            m['extras'] = {k_: v for k_, v in mt.items() if k_ not in ('index', '_L')}
             materials.append(m); mat_index[k] = len(materials) - 1
         return mat_index[k]
 
-    def vertex_accessors(vb, skinned):
+    def vertex_accessors(vb, skinned, Lg=L):
+        vb = (id(Lg), vb) if Lg is not L else vb
         if vb not in acc_cache:
-            P, UV, N = L.vertices(vb)
+            P, UV, N = Lg.vertices(vb[1] if isinstance(vb, tuple) else vb)
             a = dict(POSITION=B.add(P.astype('<f4'), 34962, componentType=5126, count=len(P), type='VEC3', min=[float(x) for x in P.min(0)], max=[float(x) for x in P.max(0)]),
                      NORMAL=B.add(N.astype('<f4'), 34962, componentType=5126, count=len(N), type='VEC3'),
                      TEXCOORD_0=B.add(UV.astype('<f4'), 34962, componentType=5126, count=len(UV), type='VEC2'))
-            sk = L.skin(vb)
+            sk = Lg.skin(vb[1] if isinstance(vb, tuple) else vb)
             if sk is not None:
                 J, W = sk
                 a['JOINTS_0'] = B.add(J.astype('u1'), 34962, componentType=5121, count=len(J), type='VEC4')
@@ -106,9 +113,10 @@ def export_gltf(L, model, outdir, tag='', animations=None):
 
     mesh_prims = {}
     for mi, me, g in groups:
-        skinned = L.vbs[g['vb']]['fmt'] != 828177625
-        acc = vertex_accessors(g['vb'], skinned)
-        I = (L.indices(g['ib'])[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex']).astype('<u4')
+        Lg = g.get('_L') or L                                 # combined models take geometry from several BLPs
+        skinned = Lg.vbs[g['vb']]['fmt'] != 828177625
+        acc = vertex_accessors(g['vb'], skinned, Lg)
+        I = (Lg.indices(g['ib'])[g['firstIndex']:g['firstIndex'] + g['indexCount']] + g['baseVertex']).astype('<u4')
         prim = dict(attributes=dict(acc), indices=B.add(I, 34963, componentType=5125, count=len(I), type='SCALAR'), mode=4,
                     material=material(g['materialID']), extras=dict(states=g['states'], group=g['group']))
         mesh_prims.setdefault(mi, []).append((prim, skinned, g['vb']))
@@ -127,7 +135,14 @@ def export_gltf(L, model, outdir, tag='', animations=None):
                               skeleton=bone_node(0, fsk) if sks[fsk]['bones'] else None))
             if skins[-1]['skeleton'] is None: del skins[-1]['skeleton']
             node['skin'] = len(skins) - 1
-        nodes.append(node); scene_children.append(len(nodes) - 1)
+        nodes.append(node)
+        parent = attach_node.get((d.get('meshParent') or {}).get(mi))          # a part that hangs on an attachment point (a weapon, a hat)
+        if parent is not None and not prims[0][1]:
+            nodes[parent].setdefault('children', []).append(len(nodes) - 1)
+        elif not prims[0][1]:                              # static mesh: its vertices are Z-up, so it goes under the Z-up -> Y-up node (skinned meshes get that rotation through their joints)
+            nodes[0]['children'].append(len(nodes) - 1)
+        else:
+            scene_children.append(len(nodes) - 1)
     gl_anims = []
     bone_index = {n: i for i, n in enumerate(d['bones']) if n}
     for anim in animations or []:

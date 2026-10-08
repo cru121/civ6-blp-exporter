@@ -22,9 +22,18 @@ python civ6_blp_export.py Base Babylon -o out      # several packages ("Base" = 
 python civ6_blp_export.py "C:\...\landmarks\city_buildings.blp"     # one file (or a folder of .blp)
 python civ6_blp_export.py Babylon --list           # just list what's inside
 ```
-Options: `--anim NAME...` (animations into skinned glTF), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--validate`, `--report`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
+Options: `--anim NAME...` (animations into skinned glTF; `--anim own` = the animations each model itself uses), `--max-anims N`, `-o <folder>` (default `civ6_export`), `--states Worked,Pillaged,...`, `--raw`, `--validate`, `--report`, `--no-textures`, `--game "<install folder>"`, `--platform Windows`.
 
-Models contain the geometry of every tile state together (Construction, Worked, Pillaged... overlap, as in the game files). `--states Worked` instead writes one clean `<name>__Worked.obj/.gltf` per model holding only the groups visible in that state (and sets the assembly states too); state info stays in the object names and glTF `extras.states`. `--validate` checks the finished export (see below).
+Models contain the geometry of every tile state together (Construction, Worked, Pillaged... overlap, as in the game files). `--states Worked` instead writes one clean `<name>__Worked.obj/.gltf` per model holding only the groups visible in that state (and sets the assembly states too); state info stays in the object names and glTF `extras.states`. `--validate` checks the finished export (see below). Attachment points (where operators, projectiles and FX attach) are in each model's JSON and as `attach_<name>` nodes in the glTF.
+
+### For modders: `--raw`, `--units`
+
+A BLP model is a cooked Asset Editor asset (an `.ast` plus the `.fgx` geometry it uses), so one model holds the geometry once per tile state. Two options give views that are closer to how you work:
+
+- **`--raw`** adds `<blp>/raw/`: the model as its source `.fgx` files. Each mesh appears once (no per-state copies), with the material of the first state out of Worked, Construction, Unbuilt, Unworked; Pillaged-only meshes form a separate `<name>_PIL` model, like the `_PIL.fgx` files. Next to each model: **`<name>.asset.json`** (meshes, which material each state uses, texture slots, bones, attachment points, animation slot bindings, timelines with their triggers) and **`<name>.approx.ast`** (the same as an Asset Editor `.ast`-shaped file). The `.ast` is reconstructed, not the original: material, mesh-group and instance names are not stored in the game files (materials are called `<name>_matN`), and effect/sound names come from `trigger_names.json` where known. Treat it as a starting point.
+- **`--units [NAME...]`** writes `<out>/units/<UNIT>/<member>__<culture>_<variation>.gltf`: a whole unit assembled from its parts (body, head, armor, weapons) as the artdefs define them, with a `.json` listing the parts, tints and scales. Parts at `Root` are skinned onto one shared skeleton; parts at other points (Hat, WeaponPrimary...) hang on that attachment point. Where a bin offers several assets the first is used (the game picks randomly), tints are not applied, and only the first culture of a member is written. Needs the BLPs of all parts in the same run (for Anansi: `Base Babylon`). With `--anim own` the glTF carries the unit's own animations.
+
+What the package knows about animation: `animations` / `animationSlots` (slot -> animation, named from the game's state graphs, see `blp_dsgs.py`), `timelines` (per slot: triggers with type, start, attachment point, effect/sound name). `--anim own` puts the model's own animations into its glTF.
 
 Output: `<out>/<package>__<blp>/{models,assemblies,textures}/` — `.obj` + `.mtl` (+ `.json` with the mesh/bone/state/material data), shared decoded `textures/*.png`, and `summary.md` / `summary.json`.
 Object names inside an OBJ look like `Palgum_bld__g5_Unworked+Worked_mat0`: bone/mesh name (`meshN` when the mesh has no bone name), group, the tile states in which that group is visible, material. Each object is preceded by the matching `usemtl`, and the OBJ declares its `.mtl` with `mtllib`, so Blender imports the materials.
@@ -38,6 +47,10 @@ Open the `.gltf` files (recommended: materials come through as PBR) or the OBJs 
 | `blp_models.py` | models, materials, vertex decode, OBJ output |
 | `blp_textures.py` | BC1 / BC3 / BC4 / BC5 texture decode |
 | `blp_assemble.py` | skeleton-only placement nodes (assemblies) |
+| `blp_bundle.py` | `--raw` bundle: `.asset.json` and the reconstructed `.approx.ast` |
+| `blp_units.py` | `--units`: whole units assembled from their parts |
+| `blp_dsgs.py` | slot names of the game's state graphs (generated) |
+| `trigger_names.json`, `tools/build_trigger_names.py` | effect/sound name hashes -> names, and the script that builds them from the SDK assets |
 | `blp_gltf.py` | glTF with skeleton, skinning and animations |
 | `blp_anim.py` | loose `ANIMATION_*` file decoder |
 | `obj_raster.py` | quick textured preview renderer |

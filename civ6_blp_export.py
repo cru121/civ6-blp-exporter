@@ -13,7 +13,7 @@ reference - don't redistribute Firaxis assets.
 """
 import argparse, glob, json, os, re, sys, time, traceback
 
-__version__ = '0.3.1'      # see CHANGELOG.md
+__version__ = '0.4.0'      # see CHANGELOG.md
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -93,11 +93,15 @@ def matching_animations(model, patterns, max_anims, min_cover=0.6):
     """Loose ANIMATION_* files whose tracks (>= min_cover of them) name bones of this model's skeleton."""
     import blp_anim, blp_textures
     bones = {b for b in model['bones'] if b}
+    own = set(model.get('animations') or [])
     out = []
     for name, path in sorted(blp_textures.texture_index().items()):
         if not name.startswith('ANIMATION_'):
             continue
-        if patterns != ['all'] and not any(p.lower() in name.lower() for p in patterns):
+        if patterns == ['own']:                    # exactly the animations the model's own bindings use (read from the BLP)
+            if name not in own:
+                continue
+        elif patterns != ['all'] and not any(p.lower() in name.lower() for p in patterns):
             continue
         if path not in _anim_cache:
             try:
@@ -107,12 +111,12 @@ def matching_animations(model, patterns, max_anims, min_cover=0.6):
         a = _anim_cache[path]
         if a and a['tracks'] and sum(t['name'] in bones for t in a['tracks']) / len(a['tracks']) >= min_cover:
             out.append(a)
-            if len(out) >= max_anims:
+            if len(out) >= max_anims and patterns != ['own']:
                 break
     return out
 
 
-def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=20, model_states=None):
+def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=20, model_states=None, raw=False):
     from blp_models import Landmarks
     import blp_assemble
     rec = dict(package=pkg, blp=os.path.basename(path), path=path, models=0, exported=0, assemblies=[], errors=[], textures=0)
@@ -124,6 +128,7 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
         return rec
     base = os.path.join(outroot, '%s__%s' % (pkg, os.path.splitext(os.path.basename(path))[0]))
     mdir, adir, tdir = os.path.join(base, 'models'), os.path.join(base, 'assemblies'), os.path.join(base, 'textures')
+    rdir = os.path.join(base, 'raw')
     os.makedirs(mdir, exist_ok=True)
     L.texture_dir = tdir if textures else None
     names = [md['name'] for md in L.models]
@@ -135,7 +140,7 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
         tag = '_%02d' % i if names.count(md['name']) > 1 else ''
         try:
             import blp_gltf
-            from blp_models import model_for_state, safe_name
+            from blp_models import model_for_state, raw_variants, safe_name
             matched = matching_animations(md, anims, max_anims) if anims else []
             # without --states: one export with every state's geometry; with it: one export per state, containing only that state's groups
             variants = [(md, tag)] if not model_states else [(model_for_state(md, st), '%s__%s' % (tag, st)) for st in model_states]
@@ -149,6 +154,13 @@ def export_blp(pkg, path, outroot, states, textures=True, anims=None, max_anims=
                 blp_gltf.export_gltf(L, variant, mdir, vtag, matched)       # every model gets a glTF: static = plain mesh nodes, skinned = + skeleton, weights, animations
                 n += 1
                 rec['gltf'] = rec.get('gltf', 0) + 1
+            if n and raw:                                                      # the source .fgx view (every mesh once) and the per-asset bundle (JSON + approximate .ast)
+                import blp_bundle
+                os.makedirs(rdir, exist_ok=True)
+                for suf, v in raw_variants(md):
+                    L.export(v, rdir, tag + suf)
+                    blp_gltf.export_gltf(L, v, rdir, tag + suf, matched)
+                blp_bundle.write_bundle(md, rdir, dict(package=pkg, blp=os.path.basename(path)), tag)
             if n:
                 rec['exported'] += 1
                 groups = [g for me in md['meshes'] for g in me['groups']]
@@ -191,11 +203,13 @@ def main(argv=None):
     ap.add_argument('-o', '--out', default='civ6_export', help='output folder (default ./civ6_export)')
     ap.add_argument('--game', help="Civ6 install folder (auto-detected from Steam/Epic if omitted; or set CIV6_DIR)")
     ap.add_argument('--states', help='states to export (Construction,Pillaged,Unbuilt,Unworked,Worked): one OBJ/glTF per state (<name>__<State>) holding only the groups visible in that state, and the states of assemblies. Default: models contain every state together; assemblies Worked,Pillaged')
+    ap.add_argument('--raw', action='store_true', help='also write each model as its source .fgx files into <blp>/raw: every mesh once, without the per-state copies, with one material; Pillaged-only meshes go to a separate <name>_PIL model. Plus <name>.asset.json (all structure data of the asset) and <name>.approx.ast (a reconstructed Asset Editor .ast)')
+    ap.add_argument('--units', nargs='*', metavar='NAME', help='also write whole units to <out>/units/<UNIT>/: one glTF per unit member and variation, assembled from the unit parts (body, head, armor, weapons) as the artdefs define them. Optional NAMEs limit it to units whose name contains one of them. Uses the BLPs exported in this run')
     ap.add_argument('--report', action='store_true', help='write <out>/dependency_report: model catalog (sizes, textures, referencing artdef entries) and how each unit is composed from parts (reads the game ArtDefs)')
     ap.add_argument('--validate', action='store_true', help='after exporting, check the output for missing textures/materials and other inconsistencies (exit code 1 if any error)')
     ap.add_argument('--platform', default='Windows', help='Platforms/<name> to read when given Base/DLC names (default Windows)')
     ap.add_argument('--list', action='store_true', help='only list the models inside, export nothing')
-    ap.add_argument('--anim', nargs='+', metavar='NAME', help="add loose ANIMATION_* files whose name contains NAME (or 'all') to the glTF of skinned models, if their bone tracks fit the skeleton")
+    ap.add_argument('--anim', nargs='+', metavar='NAME', help="add loose ANIMATION_* files whose name contains NAME (or 'all') to the glTF of skinned models, if their bone tracks fit the skeleton; 'own' = just the animations the model itself uses (read from the BLP)")
     ap.add_argument('--max-anims', type=int, default=20, help='max animations per model (default 20)')
     ap.add_argument('--no-textures', action='store_true', help='skip texture decoding')
     a = ap.parse_args(argv)
@@ -221,7 +235,7 @@ def main(argv=None):
                 if r['models']:
                     print('%-48s models=%-3d vb=%-3d textures=%-3d assembly nodes=%s' % (label, r['models'], r['vertexBuffers'], r['textures'], ','.join(r['assemblyNodes']) or '-'))
                 results.append(r); continue
-            r = export_blp(pkg, path, a.out, states, not a.no_textures, a.anim, a.max_anims, model_states)
+            r = export_blp(pkg, path, a.out, states, not a.no_textures, a.anim, a.max_anims, model_states, a.raw)
             if r['models']:
                 print('[%d/%d] %-44s models %d/%d exported, assemblies %d, textures %d%s' % (k, len(files), label, r['exported'], r['models'], len(r['assemblies']), r['textures'], ', %d error(s)' % len(r['errors']) if r['errors'] else ''))
             results.append(r)
@@ -251,6 +265,11 @@ def main(argv=None):
         import blp_artdefs
         rdir, nunits, nmodels = blp_artdefs.report_dependencies(game, results, a.out)
         print('Dependency report: %d units, %d models -> %s' % (nunits, nmodels, rdir))
+    if a.units is not None:
+        import blp_units
+        us = blp_units.export_units(game, results, a.out, anims=bool(a.anim), only=a.units or None)
+        print('Whole units: %d unit(s), %d glTF file(s), %d note(s) -> %s' % (us['units'], us['files'], us['warnings'], os.path.join(a.out, 'units')))
+        for sk in us['skipped'][:10]: print('  skipped', sk)
     if a.validate:
         import blp_validate
         return 1 if blp_validate.report(a.out) else 0

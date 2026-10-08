@@ -157,14 +157,14 @@ def check_gltf(path, out):
 
 def validate_tree(root):
     out = []
-    objs = sorted(glob.glob(os.path.join(root, '*', 'models', '*.obj')) + glob.glob(os.path.join(root, '*', 'assemblies', '*.obj')))
+    objs = sorted(glob.glob(os.path.join(root, '*', 'models', '*.obj')) + glob.glob(os.path.join(root, '*', 'raw', '*.obj')) + glob.glob(os.path.join(root, '*', 'assemblies', '*.obj')))
     for p in objs:
         jp = os.path.splitext(p)[0] + '.json'
         tris = None
-        if os.path.exists(jp) and os.sep + 'models' + os.sep in p:
+        if os.path.exists(jp) and (os.sep + 'models' + os.sep in p or os.sep + 'raw' + os.sep in p):
             tris = check_model_json(jp, out)
         check_obj(p, out, tris)
-    for p in sorted(glob.glob(os.path.join(root, '*', 'models', '*.gltf'))):
+    for p in sorted(glob.glob(os.path.join(root, '*', 'models', '*.gltf')) + glob.glob(os.path.join(root, '*', 'raw', '*.gltf')) + glob.glob(os.path.join(root, 'units', '*', '*.gltf'))):
         check_gltf(p, out)
     return out, len(objs)
 
